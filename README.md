@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="DATA/PNG/LogoSocial.png" alt="KUKA.T.R.E.E. Logo" width="400">
+</p>
+
 # 🤖 KUKA 3D Print Toolkit
 
 > A set of tools for trajectory import, simulation, and streaming to a KUKA robot.
