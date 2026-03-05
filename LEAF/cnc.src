@@ -1,0 +1,367 @@
+&ACCESS RVP
+&REL 1
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\ExpertVorgabe
+&PARAM EDITMASK = *
+DEF cnc( )
+END
+
+GLOBAL DEFFCT INT Init( )
+  DECL INT toolNo
+  DECL INT baseNo
+
+  CNC_CMD_NONE = 0
+  CNC_CMD_OPEN = 1
+  CNC_CMD_CLOSE = 2
+  CNC_CMD_RESET = 3
+
+  CNC_BUF_SIZE = 100
+  CNC_TRG_BUF_SIZE = 200
+  CNC_SPEED_SCALE = 100.0
+
+  toolNo = 8
+  baseNo = 8
+
+  $BWDSTART = FALSE
+  BAS(#INITMOV,0)
+  BAS(#TOOL,toolNo)
+  BAS(#BASE,baseNo)
+
+  $ADVANCE = 5
+  $APO.CDIS = 1
+  $VEL.CP = 0.1
+  $ACC.CP = 0.5
+  $VEL.ORI1 = 2.0
+  $ACC.ORI1 = 2.0
+
+  ; MsgNotify default in MsgLib can set VL_Stop=TRUE on KSS 8.2.
+  ; Keep Init silent to avoid "KSS01376 Active command inhibited" in AUT.
+  RETURN 0
+ENDFCT
+
+GLOBAL DEFFCT INT CncTrigEnqueue(point:IN)
+  DECL CNC_MOVE_T point
+  DECL INT nextWr
+
+  nextWr = CNC_TRG_WR_IDX + 1
+  IF nextWr > CNC_TRG_BUF_SIZE THEN
+    nextWr = 1
+  ENDIF
+
+  IF nextWr == CNC_TRG_RD_IDX THEN
+    CNC_TRG_OVERFLOW = TRUE
+    CNC_STREAM_ERROR = TRUE
+    CNC_STREAM_ERROR_NO = -3101
+    MsgNotify("CNC trigger queue overflow","prg")
+    RETURN -1
+  ENDIF
+
+  CNC_TRG_BUF[CNC_TRG_WR_IDX].POINT_NO = point.POINT_NO
+  CNC_TRG_BUF[CNC_TRG_WR_IDX].LAYER_NO = point.LAYER_NO
+  CNC_TRG_BUF[CNC_TRG_WR_IDX].PROGRESS_PCT = point.PROGRESS_PCT
+  CNC_TRG_BUF[CNC_TRG_WR_IDX].NOTE[] = point.NOTE[]
+  CNC_TRG_BUF[CNC_TRG_WR_IDX].V_EXT = point.V_EXT
+  CNC_TRG_BUF[CNC_TRG_WR_IDX].V_MOVE = point.V_MOVE
+
+  CNC_TRG_WR_IDX = nextWr
+  RETURN 0
+ENDFCT
+
+GLOBAL DEF CncOnPointStart( )
+  DECL INT nextRd
+
+  IF CNC_TRG_RD_IDX == CNC_TRG_WR_IDX THEN
+    CNC_TRG_UNDERFLOW = TRUE
+    CNC_STREAM_ERROR = TRUE
+    CNC_STREAM_ERROR_NO = -3102
+    RETURN
+  ENDIF
+
+  CNC_EXEC_POINT_NO = CNC_TRG_BUF[CNC_TRG_RD_IDX].POINT_NO
+  CNC_EXEC_LAYER_NO = CNC_TRG_BUF[CNC_TRG_RD_IDX].LAYER_NO
+  CNC_EXEC_PROGRESS_PCT = CNC_TRG_BUF[CNC_TRG_RD_IDX].PROGRESS_PCT
+  CNC_EXEC_NOTE[] = CNC_TRG_BUF[CNC_TRG_RD_IDX].NOTE[]
+  CNC_V_EXT_COPY = CNC_TRG_BUF[CNC_TRG_RD_IDX].V_EXT
+  CNC_V_MOVE_COPY = CNC_TRG_BUF[CNC_TRG_RD_IDX].V_MOVE
+
+  nextRd = CNC_TRG_RD_IDX + 1
+  IF nextRd > CNC_TRG_BUF_SIZE THEN
+    nextRd = 1
+  ENDIF
+  CNC_TRG_RD_IDX = nextRd
+
+  CNC_EXEC_SEQ = CNC_EXEC_SEQ + 1
+  IF CNC_EXEC_SEQ <= 0 THEN
+    CNC_EXEC_SEQ = 1
+  ENDIF
+END
+
+GLOBAL DEFFCT INT MoveLin(point:IN)
+  DECL CNC_MOVE_T point
+  DECL FRAME target
+  DECL REAL cpVel
+
+  IF point.V_MOVE <= 0.0 THEN
+    MsgNotify("MoveLin failed: invalid V_MOVE","prg")
+    RETURN -1
+  ENDIF
+
+  cpVel = point.V_MOVE / 1000.0
+  IF cpVel < 0.001 THEN
+    cpVel = 0.001
+  ENDIF
+  $VEL.CP = cpVel
+
+  target.X = point.X
+  target.Y = point.Y
+  target.Z = point.Z
+  target.A = point.A
+  target.B = point.B
+  target.C = point.C
+
+  IF CncTrigEnqueue(point) == -1 THEN
+    RETURN -1
+  ENDIF
+
+  TRIGGER WHEN PATH=0 DELAY=0 DO CncOnPointStart() PRIO=-1
+  LIN target C_DIS
+
+  RETURN 0
+ENDFCT
+
+GLOBAL DEFFCT INT MoveLinExact(point:IN)
+  DECL CNC_MOVE_T point
+  DECL FRAME target
+  DECL REAL cpVel
+
+  IF point.V_MOVE <= 0.0 THEN
+    MsgNotify("MoveLinExact failed: invalid V_MOVE","prg")
+    RETURN -1
+  ENDIF
+
+  cpVel = point.V_MOVE / 1000.0
+  IF cpVel < 0.001 THEN
+    cpVel = 0.001
+  ENDIF
+  $VEL.CP = cpVel
+
+  target.X = point.X
+  target.Y = point.Y
+  target.Z = point.Z
+  target.A = point.A
+  target.B = point.B
+  target.C = point.C
+
+  IF CncTrigEnqueue(point) == -1 THEN
+    RETURN -1
+  ENDIF
+
+  TRIGGER WHEN PATH=0 DELAY=0 DO CncOnPointStart() PRIO=-1
+  LIN target
+
+  RETURN 0
+ENDFCT
+
+GLOBAL DEFFCT INT CncWaitAck(reqId:IN, timeoutCycles:IN)
+  DECL INT reqId
+  DECL INT timeoutCycles
+  DECL INT i
+
+  FOR i = 1 TO timeoutCycles
+    IF CNC_ACK_ID == reqId THEN
+      IF CNC_ACK_RC == 0 THEN
+        RETURN 0
+      ENDIF
+      MsgNotify("CNC command failed, rc=%1","prg",CNC_ACK_RC)
+      IF CNC_STREAM_ERROR_NO <> 0 THEN
+        MsgNotify("CNC stream msg_no=%1","prg",CNC_STREAM_ERROR_NO)
+      ENDIF
+      RETURN -1
+    ENDIF
+    WAIT SEC 0.01
+  ENDFOR
+
+  MsgNotify("CNC command timeout","prg")
+  RETURN -1
+ENDFCT
+
+GLOBAL DEFFCT INT CncClose( )
+  DECL INT reqId
+  DECL INT rc
+
+  CNC_CMD_NONE = 0
+  CNC_CMD_OPEN = 1
+  CNC_CMD_CLOSE = 2
+  CNC_CMD_RESET = 3
+
+  IF (NOT CNC_STREAM_ACTIVE) AND (NOT CNC_FILE_OPEN) AND (CNC_REQ_ID == CNC_ACK_ID) THEN
+    CNC_REQ_CMD = CNC_CMD_NONE
+    RETURN 0
+  ENDIF
+
+  reqId = CNC_REQ_ID + 1
+  IF reqId <= 0 THEN
+    reqId = 1
+  ENDIF
+
+  CNC_REQ_CMD = CNC_CMD_CLOSE
+  CNC_REQ_ID = reqId
+
+  rc = CncWaitAck(reqId, 500)
+  IF rc == -1 THEN
+    IF CNC_STREAM_ERROR_NO <> 0 THEN
+      MsgNotify("CncOpen failed, msg_no=%1","prg",CNC_STREAM_ERROR_NO)
+    ENDIF
+    RETURN -1
+  ENDIF
+
+  CNC_REQ_CMD = CNC_CMD_NONE
+  RETURN 0
+ENDFCT
+
+GLOBAL DEFFCT INT CncOpen(fileName[]:IN)
+  DECL CHAR fileName[]
+  DECL INT rc
+  DECL INT reqId
+  DECL INT i
+  DECL INT nameLen
+
+  CNC_CMD_NONE = 0
+  CNC_CMD_OPEN = 1
+  CNC_CMD_CLOSE = 2
+  CNC_CMD_RESET = 3
+
+  CNC_BUF_SIZE = 100
+  CNC_TRG_BUF_SIZE = 200
+  CNC_SPEED_SCALE = 100.0
+
+  IF CNC_REQ_ID <> CNC_ACK_ID THEN
+    rc = CncWaitAck(CNC_REQ_ID, 300)
+    IF rc == -1 THEN
+      MsgNotify("CncOpen failed: pending command","prg")
+      RETURN -1
+    ENDIF
+  ENDIF
+
+  IF CNC_STREAM_ACTIVE OR CNC_FILE_OPEN THEN
+    rc = CncClose()
+    IF rc == -1 THEN
+      MsgNotify("CncOpen failed: close previous stream","prg")
+      RETURN -1
+    ENDIF
+  ENDIF
+
+  CNC_STREAM_EOF = FALSE
+  CNC_STREAM_ERROR = FALSE
+  CNC_STREAM_ERROR_NO = 0
+  CNC_WR_IDX = 1
+  CNC_RD_IDX = 1
+  CNC_POINTS_READ_TOTAL = 0
+  CNC_V_EXT_COPY = 0.0
+  CNC_V_MOVE_COPY = 0.0
+
+  CNC_EXEC_POINT_NO = 0
+  CNC_EXEC_LAYER_NO = 0
+  CNC_EXEC_PROGRESS_PCT = 0
+  CNC_EXEC_NOTE[] = " "
+  CNC_EXEC_SEQ = 0
+  CNC_MSG_SEQ = 0
+
+  CNC_LAST_REQ_POINT_NO = 0
+  CNC_LAST_REQ_LAYER_NO = 0
+  CNC_LAST_REQ_PROG_PCT = 0
+  CNC_LAST_REQ_NOTE[] = " "
+  CNC_LAST_REQ_SEQ = 0
+  CNC_LAST_REQ_MSG_SEQ = 0
+
+  CNC_TRG_WR_IDX = 1
+  CNC_TRG_RD_IDX = 1
+  CNC_TRG_OVERFLOW = FALSE
+  CNC_TRG_UNDERFLOW = FALSE
+
+  nameLen = STRLEN(fileName[])
+  IF nameLen <= 0 THEN
+    MsgNotify("CncOpen failed: empty fileName","prg")
+    RETURN -1
+  ENDIF
+  IF nameLen > 127 THEN
+    nameLen = 127
+  ENDIF
+
+  FOR i = 1 TO 128
+    CNC_REQ_FILE[i] = 0
+  ENDFOR
+  FOR i = 1 TO nameLen
+    CNC_REQ_FILE[i] = fileName[i]
+  ENDFOR
+  CNC_REQ_FILE[nameLen + 1] = 0
+
+  reqId = CNC_REQ_ID + 1
+  IF reqId <= 0 THEN
+    reqId = 1
+  ENDIF
+
+  CNC_REQ_CMD = CNC_CMD_OPEN
+  CNC_REQ_ID = reqId
+
+  rc = CncWaitAck(reqId, 500)
+  IF rc == -1 THEN
+    IF CNC_STREAM_ERROR_NO <> 0 THEN
+      MsgNotify("CncOpen failed, msg_no=%1","prg",CNC_STREAM_ERROR_NO)
+    ENDIF
+    RETURN -1
+  ENDIF
+
+  CNC_REQ_CMD = CNC_CMD_NONE
+  RETURN 0
+ENDFCT
+
+GLOBAL DEFFCT BOOL CncIsEof( )
+  IF CNC_STREAM_ERROR THEN
+    RETURN FALSE
+  ENDIF
+
+  IF (CNC_RD_IDX == CNC_WR_IDX) AND CNC_STREAM_EOF AND (NOT CNC_STREAM_ACTIVE) THEN
+    RETURN TRUE
+  ENDIF
+
+  RETURN FALSE
+ENDFCT
+
+GLOBAL DEFFCT INT CncGetNextPoint(point:OUT)
+  DECL CNC_MOVE_T point
+  DECL INT idx
+  DECL INT nextIdx
+
+  IF CNC_STREAM_ERROR THEN
+    MsgNotify("CncGetNextPoint failed, msg_no=%1","prg",CNC_STREAM_ERROR_NO)
+    RETURN -1
+  ENDIF
+
+  IF CNC_RD_IDX <> CNC_WR_IDX THEN
+    idx = CNC_RD_IDX
+    point = CNC_BUF_POINTS[idx]
+
+    nextIdx = idx + 1
+    IF nextIdx > CNC_BUF_SIZE THEN
+      nextIdx = 1
+    ENDIF
+    CNC_RD_IDX = nextIdx
+
+    CNC_LAST_REQ_POINT_NO = point.POINT_NO
+    CNC_LAST_REQ_LAYER_NO = point.LAYER_NO
+    CNC_LAST_REQ_PROG_PCT = point.PROGRESS_PCT
+    CNC_LAST_REQ_NOTE[] = point.NOTE[]
+    CNC_LAST_REQ_SEQ = CNC_LAST_REQ_SEQ + 1
+    IF CNC_LAST_REQ_SEQ <= 0 THEN
+      CNC_LAST_REQ_SEQ = 1
+    ENDIF
+
+    RETURN 0
+  ENDIF
+
+  IF CncIsEof() THEN
+    RETURN 1
+  ENDIF
+
+  RETURN 2
+ENDFCT

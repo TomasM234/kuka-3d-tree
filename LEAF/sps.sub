@@ -1,0 +1,421 @@
+&ACCESS RVO
+&REL 3
+&COMMENT PLC on control
+DEF sps( )
+  ;FOLD DECLARATIONS
+  ;FOLD BASISTECH DECL
+  ;Automatik extern
+  DECL STATE_T STAT
+  DECL MODUS_T MODE
+  ;ENDFOLD (BASISTECH DECL)
+  ;FOLD USER DECL
+  ; Please insert user defined declarations
+DECL REAL r_Speed_Calc
+DECL INT i_Speed_Bits
+DECL CHAR myBytes[4]
+DECL INT nOffset
+DECL STATE_T loopMsgState
+DECL CHAR loopMsgText[80]
+DECL REAL vActMm
+
+  ;ENDFOLD (USER DECL)
+  ;ENDFOLD (DECLARATIONS)
+  ;FOLD INI
+  ;FOLD AUTOEXT INIT
+  INTERRUPT DECL 91 WHEN $PRO_STATE1==#P_FREE DO RESET_OUT ()
+  INTERRUPT ON 91
+  $LOOP_MSG[]="                                                            "
+  MODE=#SYNC
+  $H_POS=$H_POS
+  ;Automatik extern
+  IF $MODE_OP==#EX THEN
+    CWRITE($CMD,STAT,MODE,"RUN /R1/CELL()") can raise KSS01376
+  ENDIF
+  ;ENDFOLD (AUTOEXT INIT)
+  ;FOLD USER INIT
+  ; Please insert user defined initialization commands
+  OLD_E1_POS = $axis_act.e1
+  CncSpsInit()
+  ;ENDFOLD (USER INIT)
+  ;ENDFOLD (INI)
+  
+
+  LOOP
+     WAIT FOR NOT($POWER_FAIL)
+     TORQUE_MONITORING() ; disabled to avoid $CMD path (CANCEL 1 / KSS01376)
+  CncSpsStep()
+    ;FOLD USER PLC
+    ;Make your modifications here
+
+    ;ENDFOLD (USER PLC)
+
+; Disable cyclic status messages in AUT. On KSS 8.2 message handling can
+; interfere with active commands during automatic run.
+;IF CNC_LAST_REQ_SEQ <> CNC_LAST_REQ_MSG_SEQ THEN
+;  CNC_LAST_REQ_MSG_SEQ = CNC_LAST_REQ_SEQ
+;  nOffset = 0
+;  SWRITE(loopMsgText[], loopMsgState, nOffset, "REQ Bod=%d Vrstva=%d Prog=%d Pozn=%s", CNC_LAST_REQ_POINT_NO, CNC_LAST_REQ_LAYER_NO, CNC_LAST_REQ_PROG_PCT, CNC_LAST_REQ_NOTE[])
+;  MsgLoop(loopMsgText[],"prg")
+;ENDIF
+
+vActMm = S_Robot_Vel * 10000.0 ; = 1000.0 * $VEL_ACT [m/s -> mm/s]
+IF CNC_V_MOVE_COPY > 0.001 THEN
+  r_Speed_Calc = CNC_V_EXT_COPY * (vActMm / CNC_V_MOVE_COPY)
+ELSE
+  r_Speed_Calc = CNC_V_EXT_COPY
+ENDIF
+nOffset = 0
+CAST_TO(myBytes[], nOffset, r_Speed_Calc)
+nOffset = 0
+CAST_FROM(myBytes[], nOffset, i_Speed_Bits)
+s_RP_MV_Spd = i_Speed_Bits
+
+  ENDLOOP
+  ;FOLD ;%{H}
+  ;FOLD
+END
+  ;ENDFOLD
+
+
+DEF CncSpsInit( )
+  CNC_CMD_NONE = 0
+  CNC_CMD_OPEN = 1
+  CNC_CMD_CLOSE = 2
+  CNC_CMD_RESET = 3
+
+  CNC_STATE = 0
+  CNC_STREAM_ACTIVE = FALSE
+  CNC_STREAM_EOF = FALSE
+  CNC_STREAM_ERROR = FALSE
+  CNC_STREAM_ERROR_NO = 0
+
+  CNC_BUF_SIZE = 100
+  CNC_TRG_BUF_SIZE = 200
+  CNC_SPEED_SCALE = 100.0
+
+  CNC_WR_IDX = 1
+  CNC_RD_IDX = 1
+  CNC_REQ_ID = 0
+  CNC_FILE_OPEN = FALSE
+  CNC_FILE_HANDLE = 0
+  CNC_REQ_FILE[] = " "
+  CNC_FILE_NAME[] = " "
+  CNC_POINTS_READ_TOTAL = 0
+
+  CNC_EXEC_POINT_NO = 0
+  CNC_EXEC_LAYER_NO = 0
+  CNC_EXEC_PROGRESS_PCT = 0
+  CNC_EXEC_NOTE[] = " "
+  CNC_EXEC_SEQ = 0
+  CNC_MSG_SEQ = 0
+
+  CNC_LAST_REQ_POINT_NO = 0
+  CNC_LAST_REQ_LAYER_NO = 0
+  CNC_LAST_REQ_PROG_PCT = 0
+  CNC_LAST_REQ_NOTE[] = " "
+  CNC_LAST_REQ_SEQ = 0
+  CNC_LAST_REQ_MSG_SEQ = 0
+
+  CNC_TRG_WR_IDX = 1
+  CNC_TRG_RD_IDX = 1
+  CNC_TRG_OVERFLOW = FALSE
+  CNC_TRG_UNDERFLOW = FALSE
+  CNC_V_EXT_COPY = 0.0
+  CNC_V_MOVE_COPY = 0.0
+
+  CNC_REQ_CMD = CNC_CMD_NONE
+  CNC_ACK_RC = 0
+  CNC_ACK_ID = 0
+END
+
+DEF CncSpsStep( )
+  DECL STATE_T ioState
+  DECL STATE_T parseState
+  DECL MODUS_T mode
+  DECL CHAR dataLine[256]
+  DECL CHAR formatHead1[48]
+  DECL CHAR formatHead2[24]
+  DECL CHAR formatTail[24]
+  DECL CHAR noteBuf[32]
+  DECL INT readCount
+  DECL INT offset
+  DECL INT i
+  DECL INT fill
+  DECL INT nextWr
+  DECL INT reqId
+  DECL INT reqCmd
+  DECL INT ackRc
+  DECL INT termIdx
+  DECL REAL tmpX
+  DECL REAL tmpY
+  DECL REAL tmpZ
+  DECL REAL tmpA
+  DECL REAL tmpB
+  DECL REAL tmpC
+  DECL REAL tmpVMove
+  DECL REAL tmpVExt
+  DECL INT tmpPointNo
+  DECL INT tmpLayerNo
+  DECL INT tmpProgPct
+
+  mode = #SYNC
+  formatHead1[] = "%f %f %f %f %f %f"
+  formatHead2[] = "%f %f %d %d"
+  formatTail[] = "%d %s"
+
+  CNC_BUF_SIZE = 100
+
+  IF CNC_REQ_ID <> CNC_ACK_ID THEN
+    reqId = CNC_REQ_ID
+    reqCmd = CNC_REQ_CMD
+    ackRc = 0
+
+    IF reqCmd == CNC_CMD_OPEN THEN
+      IF CNC_FILE_OPEN THEN
+        CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+        IF ioState.RET1 <> #DATA_OK THEN
+          ackRc = -1
+          CNC_STREAM_ERROR = TRUE
+          CNC_STREAM_ERROR_NO = ioState.MSG_NO
+          CNC_STATE = 60
+        ENDIF
+      ENDIF
+
+      IF ackRc == 0 THEN
+        CNC_FILE_OPEN = FALSE
+        CNC_FILE_HANDLE = 0
+        CNC_STREAM_ACTIVE = FALSE
+        CNC_STREAM_EOF = FALSE
+        CNC_STREAM_ERROR = FALSE
+        CNC_STREAM_ERROR_NO = 0
+        CNC_WR_IDX = 1
+        CNC_RD_IDX = 1
+        CNC_POINTS_READ_TOTAL = 0
+        FOR i = 1 TO 128
+          CNC_FILE_NAME[i] = 0
+        ENDFOR
+        FOR i = 1 TO 127
+          IF CNC_REQ_FILE[i] == 0 THEN
+            EXIT
+          ENDIF
+          CNC_FILE_NAME[i] = CNC_REQ_FILE[i]
+        ENDFOR
+        CNC_FILE_NAME[128] = 0
+
+        CWRITE($FCT_CALL, ioState, mode, "krl_fopen", CNC_FILE_NAME[], "r", CNC_FILE_HANDLE)
+        IF ioState.RET1 == #DATA_OK THEN
+          CNC_FILE_OPEN = TRUE
+          CNC_STREAM_ACTIVE = TRUE
+          CNC_STATE = 20
+          CNC_EXEC_POINT_NO = 0
+          CNC_EXEC_LAYER_NO = 0
+          CNC_EXEC_PROGRESS_PCT = 0
+          CNC_EXEC_NOTE[] = " "
+          CNC_EXEC_SEQ = 0
+          CNC_MSG_SEQ = 0
+          CNC_V_EXT_COPY = 0.0
+          CNC_V_MOVE_COPY = 0.0
+        ELSE
+          ackRc = -1
+          CNC_STREAM_ERROR = TRUE
+          CNC_STREAM_ERROR_NO = ioState.MSG_NO
+          offset = 0
+          SWRITE(dataLine[], parseState, offset, "CNC open fail m=%d f=%s", ioState.MSG_NO, CNC_FILE_NAME[])
+          MsgNotify(dataLine[],"sps")
+          CNC_FILE_OPEN = FALSE
+          CNC_FILE_HANDLE = 0
+          CNC_STREAM_ACTIVE = FALSE
+          CNC_STATE = 60
+        ENDIF
+      ENDIF
+
+    ELSE
+      IF reqCmd == CNC_CMD_CLOSE THEN
+        IF CNC_FILE_OPEN THEN
+          CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+          IF ioState.RET1 <> #DATA_OK THEN
+            ackRc = -1
+            CNC_STREAM_ERROR = TRUE
+            CNC_STREAM_ERROR_NO = ioState.MSG_NO
+            CNC_STATE = 60
+          ENDIF
+        ENDIF
+
+        CNC_FILE_OPEN = FALSE
+        CNC_FILE_HANDLE = 0
+        CNC_STREAM_ACTIVE = FALSE
+        CNC_STREAM_EOF = FALSE
+        CNC_V_EXT_COPY = 0.0
+        CNC_V_MOVE_COPY = 0.0
+        IF ackRc == 0 THEN
+          CNC_STATE = 0
+        ENDIF
+
+      ELSE
+        IF reqCmd == CNC_CMD_RESET THEN
+          IF CNC_FILE_OPEN THEN
+            CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+          ENDIF
+
+          CNC_FILE_OPEN = FALSE
+          CNC_FILE_HANDLE = 0
+          CNC_STREAM_ACTIVE = FALSE
+          CNC_STREAM_EOF = FALSE
+          CNC_STREAM_ERROR = FALSE
+          CNC_STREAM_ERROR_NO = 0
+          CNC_WR_IDX = 1
+          CNC_RD_IDX = 1
+          CNC_POINTS_READ_TOTAL = 0
+          CNC_V_EXT_COPY = 0.0
+          CNC_V_MOVE_COPY = 0.0
+          CNC_STATE = 0
+        ELSE
+          ackRc = -1
+          CNC_STREAM_ERROR = TRUE
+          CNC_STREAM_ERROR_NO = -3001
+          CNC_STATE = 60
+        ENDIF
+      ENDIF
+    ENDIF
+
+    CNC_ACK_RC = ackRc
+    CNC_ACK_ID = reqId
+  ENDIF
+
+  IF NOT CNC_STREAM_ACTIVE THEN
+    RETURN
+  ENDIF
+
+  FOR fill = 1 TO 4
+    nextWr = CNC_WR_IDX + 1
+    IF nextWr > CNC_BUF_SIZE THEN
+      nextWr = 1
+    ENDIF
+
+    IF nextWr == CNC_RD_IDX THEN
+      RETURN
+    ENDIF
+
+    FOR i = 1 TO 256
+      dataLine[i] = 32
+    ENDFOR
+    FOR i = 1 TO 32
+      noteBuf[i] = 32
+    ENDFOR
+
+    readCount = 0
+    CWRITE($FCT_CALL, ioState, mode, "krl_fgets", CNC_FILE_HANDLE, dataLine[], 255, readCount)
+    IF ioState.RET1 <> #DATA_OK THEN
+      IF ioState.MSG_NO == -4 THEN
+        CNC_STREAM_EOF = TRUE
+        CNC_STATE = 50
+      ELSE
+        CNC_STREAM_ERROR = TRUE
+        CNC_STREAM_ERROR_NO = ioState.MSG_NO
+        CNC_STATE = 60
+      ENDIF
+
+      IF CNC_FILE_OPEN THEN
+        CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+      ENDIF
+      CNC_FILE_OPEN = FALSE
+      CNC_FILE_HANDLE = 0
+      CNC_STREAM_ACTIVE = FALSE
+      RETURN
+    ENDIF
+    IF readCount < 256 THEN
+      termIdx = readCount + 1
+      dataLine[termIdx] = 0
+    ENDIF
+
+    offset = 0
+    SREAD(dataLine[], parseState, offset, formatHead1[], tmpX, tmpY, tmpZ, tmpA, tmpB, tmpC)
+    IF parseState.RET1 <> #DATA_OK THEN
+      IF parseState.RET1 <> #DATA_BLK THEN
+        CNC_STREAM_ERROR = TRUE
+        CNC_STREAM_ERROR_NO = -3002
+        CNC_STATE = 60
+
+        IF CNC_FILE_OPEN THEN
+          CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+        ENDIF
+        CNC_FILE_OPEN = FALSE
+        CNC_FILE_HANDLE = 0
+        CNC_STREAM_ACTIVE = FALSE
+        RETURN
+      ENDIF
+    ENDIF
+
+    SREAD(dataLine[], parseState, offset, formatHead2[], tmpVMove, tmpVExt, tmpPointNo, tmpLayerNo)
+    IF parseState.RET1 <> #DATA_OK THEN
+      IF parseState.RET1 <> #DATA_BLK THEN
+        CNC_STREAM_ERROR = TRUE
+        CNC_STREAM_ERROR_NO = -3002
+        CNC_STATE = 60
+
+        IF CNC_FILE_OPEN THEN
+          CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+        ENDIF
+        CNC_FILE_OPEN = FALSE
+        CNC_FILE_HANDLE = 0
+        CNC_STREAM_ACTIVE = FALSE
+        RETURN
+      ENDIF
+    ENDIF
+
+    SREAD(dataLine[], parseState, offset, formatTail[], tmpProgPct, noteBuf[])
+    IF parseState.RET1 <> #DATA_OK THEN
+      IF parseState.RET1 <> #DATA_BLK THEN
+        CNC_STREAM_ERROR = TRUE
+        CNC_STREAM_ERROR_NO = -3002
+        CNC_STATE = 60
+
+        IF CNC_FILE_OPEN THEN
+          CWRITE($FCT_CALL, ioState, mode, "krl_fclose", CNC_FILE_HANDLE)
+        ENDIF
+        CNC_FILE_OPEN = FALSE
+        CNC_FILE_HANDLE = 0
+        CNC_STREAM_ACTIVE = FALSE
+        RETURN
+      ENDIF
+    ENDIF
+
+    CNC_BUF_POINTS[CNC_WR_IDX].X = tmpX
+    CNC_BUF_POINTS[CNC_WR_IDX].Y = tmpY
+    CNC_BUF_POINTS[CNC_WR_IDX].Z = tmpZ
+    CNC_BUF_POINTS[CNC_WR_IDX].A = tmpA
+    CNC_BUF_POINTS[CNC_WR_IDX].B = tmpB
+    CNC_BUF_POINTS[CNC_WR_IDX].C = tmpC
+    CNC_BUF_POINTS[CNC_WR_IDX].V_MOVE = tmpVMove
+    CNC_BUF_POINTS[CNC_WR_IDX].V_EXT = tmpVExt
+    CNC_BUF_POINTS[CNC_WR_IDX].POINT_NO = tmpPointNo
+    CNC_BUF_POINTS[CNC_WR_IDX].LAYER_NO = tmpLayerNo
+    CNC_BUF_POINTS[CNC_WR_IDX].PROGRESS_PCT = tmpProgPct
+    CNC_BUF_POINTS[CNC_WR_IDX].NOTE[] = noteBuf[]
+    CNC_POINTS_READ_TOTAL = CNC_POINTS_READ_TOTAL + 1
+    CNC_WR_IDX = nextWr
+  ENDFOR
+END
+
+DEF  RESET_OUT ( )
+  DECL INT N
+  MsgLoop(" ","prg")
+  IF REFLECT_PROG_NR == 1 THEN
+    FOR N = 0 TO PGNO_LENGTH - 1
+      $OUT[PGNO_FBIT_REFL + N] = FALSE
+    ENDFOR
+  ENDIF
+  IF (PGNO_REQ>0) THEN
+    $OUT[PGNO_REQ]=FALSE
+  ELSE
+    IF (PGNO_REQ<0) THEN
+      $OUT[-PGNO_REQ]=TRUE
+    ENDIF
+  ENDIF
+END
+
+;FOLD USER SUBROUTINE
+; Integrate your user defined subroutines
+
+;ENDFOLD (USER SUBROUTINE)
+;ENDFOLD
