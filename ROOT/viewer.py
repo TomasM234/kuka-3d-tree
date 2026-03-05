@@ -5,8 +5,10 @@ import sys
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
-import pyvista as pv
-from pyvistaqt import QtInteractor
+# pyvista and pyvistaqt are imported lazily in __main__ (after splash is visible)
+# because they take several seconds to load (VTK initialization).
+pv = None
+QtInteractor = None
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSlider, QFileDialog, QMessageBox, QFrame, QSizePolicy, QComboBox,
@@ -15,7 +17,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QTimer, QProcess
 from PyQt6.QtGui import QPainter, QColor
 
-from robot_ik import RobotSimulator
+# robot_ik (ikpy / yourdfpy / trimesh) is also imported lazily in __main__.
+RobotSimulator = None
 
 
 # ---------------------------------------------------------------------------
@@ -1601,16 +1604,19 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
     app = QApplication(sys.argv)
 
-    # Splash screen — show if splash.png exists next to the script
+    # ---------------------------------------------------------------------------
+    # Splash screen — shown IMMEDIATELY, before any heavy imports.
+    #
+    # pyvista (VTK) and robot_ik (ikpy/yourdfpy/trimesh) are slow to initialise
+    # (~3-6 s combined). Deferring them here means the splash appears at once,
+    # giving the user instant feedback that the app is loading.
+    # ---------------------------------------------------------------------------
     _app_dir = os.path.dirname(os.path.abspath(__file__))
     _splash_path = os.path.join(_app_dir, "splash.png")
     splash = None
-    _splash_timer = None
     if os.path.exists(_splash_path):
         from PyQt6.QtGui import QPixmap
-        from PyQt6.QtCore import QElapsedTimer
         _pixmap = QPixmap(_splash_path)
-        # Scale to at most 80% of the screen while keeping aspect ratio
         _screen = app.primaryScreen().geometry()
         _max_w = int(_screen.width() * 0.8)
         _max_h = int(_screen.height() * 0.8)
@@ -1618,23 +1624,48 @@ if __name__ == "__main__":
             _pixmap = _pixmap.scaled(_max_w, _max_h,
                                      Qt.AspectRatioMode.KeepAspectRatio,
                                      Qt.TransformationMode.SmoothTransformation)
-        splash = QSplashScreen(_pixmap)
+        # WindowStaysOnTopHint: splash stays above everything, including the
+        # main window as it initialises underneath.
+        splash = QSplashScreen(
+            _pixmap,
+            Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.SplashScreen
+        )
         splash.show()
+        splash.raise_()
         app.processEvents()
-        _splash_timer = QElapsedTimer()
-        _splash_timer.start()
+
+    # ---------------------------------------------------------------------------
+    # Heavy imports — happen here while the splash is visible.
+    # Assigning to module-level globals makes them available to all class methods.
+    # ---------------------------------------------------------------------------
+    import pyvista as _pv                           # noqa: E402
+    from pyvistaqt import QtInteractor as _QI      # noqa: E402
+    from robot_ik import RobotSimulator as _RS     # noqa: E402
+
+    # Patch the module-level placeholders set at the top of this file.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _mod.pv = _pv
+    _mod.QtInteractor = _QI
+    _mod.RobotSimulator = _RS
+
+    app.processEvents()  # keep UI alive while imports settle
+
+    # ---------------------------------------------------------------------------
+    # Build main window and start minimum-display countdown.
+    # ---------------------------------------------------------------------------
+    from PyQt6.QtCore import QElapsedTimer
+    _load_timer = QElapsedTimer()
+    _load_timer.start()
 
     window = RobotPathViewer()
     window.show()
 
-    # Ensure splash is shown for at least 2 seconds
+    # Close splash only after at least 4 s from end-of-imports AND after the
+    # main window has been shown (splash.finish waits for the first paint).
     if splash is not None:
-        _MIN_MS = 2000
-        _elapsed = _splash_timer.elapsed()
-        if _elapsed < _MIN_MS:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(_MIN_MS - _elapsed, splash.close)
-        else:
-            splash.close()
+        _MIN_MS = 4000
+        _remaining = max(0, _MIN_MS - _load_timer.elapsed())
+        QTimer.singleShot(_remaining, lambda: splash.finish(window))
 
     sys.exit(app.exec())
