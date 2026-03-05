@@ -1,0 +1,136 @@
+&ACCESS RVP
+&REL 9
+&PARAM DISKPATH = KRC:\R1\3dTisk
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\ExpertVorgabe
+&PARAM EDITMASK = *
+DEF coin2( )
+
+  DECL INT rc
+  DECL INT rcNext
+  DECL INT pointCount
+  DECL BOOL printOk
+  DECL BOOL streamOpened
+  DECL CHAR fileName[128]
+  DECL CNC_MOVE_T point
+  DECL CNC_MOVE_T nextPoint
+
+
+;FOLD PTP HOME Vel=100 % DEFAULT;%{PE}%R 8.2.24,%MKUKATPBASIS,%CMOVE,%VPTP,%P 1:PTP, 2:HOME, 3:, 5:100, 7:DEFAULT
+$BWDSTART=FALSE
+PDAT_ACT=PDEFAULT
+FDAT_ACT=FHOME
+BAS(#PTP_PARAMS,100)
+$H_POS=XHOME
+PTP XHOME 
+;ENDFOLD
+
+ANOUT ON S_Robot_Vel = 0.1 * $VEL_ACT
+s_rq_temp_z_1 = 2300
+s_rq_temp_z_2 = 2200
+$out[205] = true
+$out[206] = false
+$out[207] = true
+
+
+;FOLD LIN P2 Vel=0.5 m/s CPDAT2 Tool[8]:3d tisk tryska Base[8]:3d tisk stul;%{PE}%R 8.2.24,%MKUKATPBASIS,%CMOVE,%VLIN,%P 1:LIN, 2:P2, 3:, 5:0.5, 7:CPDAT2
+$BWDSTART=FALSE
+LDAT_ACT=LCPDAT2
+FDAT_ACT=FP2
+BAS(#CP_PARAMS,0.5)
+LIN XP2 
+;ENDFOLD
+$VEL.CP = 0.1
+
+;FOLD WAIT Time=0.1 sec;%{PE}%R 8.2.24,%MKUKATPBASIS,%CWAIT,%VWAIT,%P 3:0.1
+WAIT SEC 0.1
+;ENDFOLD
+$out[205] = true
+
+  fileName[] = "coin.txt"
+  pointCount = 0
+  printOk = TRUE
+  streamOpened = FALSE
+
+  ; 1) One-time motion setup for LIN moves.
+  rc = Init()
+  IF rc == -1 THEN
+    MsgNotify("Init failed","prg")
+    RETURN
+  ENDIF
+
+  ; 2) Open stream from input file.
+  rc = CncOpen(fileName[])
+  IF rc == -1 THEN
+    MsgNotify("CncOpen failed","prg")
+    RETURN
+  ENDIF
+  streamOpened = TRUE
+
+  ; 3) Wait until first point is available, EOF, or error.
+  REPEAT
+    rc = CncGetNextPoint(point)
+    IF rc == 0 THEN
+      EXIT
+    ENDIF
+    IF rc == 1 THEN
+      MsgNotify("Empty input file","prg")
+      GOTO CLEANUP
+    ENDIF
+    IF rc == -1 THEN
+      MsgNotify("Stream read error","prg")
+      printOk = FALSE
+      GOTO CLEANUP
+    ENDIF
+    WAIT SEC 0.01
+  UNTIL FALSE
+
+  ; 4) Main processing loop: pipeline next point for approximation.
+  REPEAT
+    rcNext = CncGetNextPoint(nextPoint)
+    IF rcNext == -1 THEN
+      MsgNotify("Stream read error","prg")
+      printOk = FALSE
+      EXIT
+    ENDIF
+
+    IF rcNext == 2 THEN
+      WAIT SEC 0.01
+    ELSE
+      IF rcNext == 0 THEN
+        rc = MoveLin(point)
+        IF rc == -1 THEN
+          MsgNotify("MoveLin failed","prg")
+          printOk = FALSE
+          EXIT
+        ENDIF
+
+        pointCount = pointCount + 1
+        point = nextPoint
+      ELSE
+        rc = MoveLinExact(point)
+        IF rc == -1 THEN
+          MsgNotify("MoveLinExact failed","prg")
+          printOk = FALSE
+          EXIT
+        ENDIF
+        pointCount = pointCount + 1
+        EXIT
+      ENDIF
+    ENDIF
+  UNTIL FALSE
+
+  IF printOk THEN
+    MsgNotify("Print finished, moved points: %1","prg",pointCount)
+  ENDIF
+
+CLEANUP:
+  ; 5) Cleanup.
+  ANOUT OFF S_Robot_Vel
+  IF streamOpened THEN
+    rc = CncClose()
+    IF rc == -1 THEN
+      MsgNotify("CncClose failed","prg")
+    ENDIF
+  ENDIF
+
+END
