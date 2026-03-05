@@ -332,6 +332,31 @@ class DataLoaderThread(QThread):
             self.error_signal.emit(str(e))
 
 
+class ImporterThread(QThread):
+    """Background thread that calls a plugin importer's run_import() function.
+
+    Signals:
+        finished_signal(success: bool, payload: str)
+            On success: payload = path to the output CSV.
+            On failure: payload = human-readable error message.
+    """
+
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, importer_module, input_path: str, output_csv: str):
+        super().__init__()
+        self.importer_module = importer_module
+        self.input_path = input_path
+        self.output_csv = output_csv
+
+    def run(self):
+        try:
+            self.importer_module.run_import(self.input_path, self.output_csv)
+            self.finished_signal.emit(True, self.output_csv)
+        except Exception as exc:
+            self.finished_signal.emit(False, str(exc))
+
+
 class RobotPathViewer(QMainWindow):
     """Main application window: 3D trajectory viewer for KUKA robot CSV data streams."""
 
@@ -384,6 +409,10 @@ class RobotPathViewer(QMainWindow):
         # Robot simulator
         self.robot_sim = RobotSimulator()
         self.robot_actors = {}
+
+        # Importer plugin modules loaded from Importer/ directory
+        self._importer_modules = []  # parallel list to combo_importer items
+        self._import_gcode_path = ""  # last selected G-code file
 
         # Render actors
         self.path_actor_print = None
@@ -1112,18 +1141,33 @@ class RobotPathViewer(QMainWindow):
         return 'prusa'
 
     def populate_importers(self):
-        """Scan the Importer directory and populate the importer combobox."""
+        """Scan Importer/ dir, dynamically load each plugin, fill combobox."""
+        import importlib.util
+
         self.combo_importer.clear()
+        self._importer_modules = []
+
         importer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Importer")
-        if os.path.isdir(importer_dir):
-            scripts = sorted(f for f in os.listdir(importer_dir) if f.endswith('.py'))
-            self.combo_importer.addItems(scripts)
-        self.btn_run_import.setEnabled(self.combo_importer.count() > 0
-                                       and hasattr(self, '_import_gcode_path')
-                                       and bool(getattr(self, '_import_gcode_path', None)))
+        if not os.path.isdir(importer_dir):
+            return
+
+        for fname in sorted(f for f in os.listdir(importer_dir) if f.endswith('.py')):
+            script_path = os.path.join(importer_dir, fname)
+            try:
+                spec = importlib.util.spec_from_file_location(fname[:-3], script_path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                label = mod.get_label() if hasattr(mod, 'get_label') else fname
+                self.combo_importer.addItem(f"{label}  [{fname}]", userData=fname)
+                self._importer_modules.append(mod)
+            except Exception as exc:
+                print(f"[Importer] Failed to load {fname}: {exc}")
+
+        self.btn_run_import.setEnabled(
+            bool(self._importer_modules) and bool(self._import_gcode_path))
 
     def _select_gcode_for_import(self):
-        """Open GCODE/ dialog, auto-detect format, pre-select the best importer."""
+        """Open GCODE/ dialog, call each plugin's can_handle() to pre-select."""
         app_dir = os.path.dirname(os.path.abspath(__file__))
         gcode_dir = os.path.join(app_dir, "GCODE")
         os.makedirs(gcode_dir, exist_ok=True)
@@ -1137,69 +1181,67 @@ class RobotPathViewer(QMainWindow):
         self._import_gcode_path = file_path
         self.lbl_import_file.setText(os.path.basename(file_path))
 
-        # Auto-detect and pre-select matching importer
-        fmt = self._detect_gcode_format(file_path)
-        keyword = 'nc' if fmt == 'nc' else 'gcode'
+        # Ask each plugin whether it can handle this file
         matched = -1
-        for i in range(self.combo_importer.count()):
-            if keyword in self.combo_importer.itemText(i).lower():
-                matched = i
-                break
+        for i, mod in enumerate(self._importer_modules):
+            try:
+                if hasattr(mod, 'can_handle') and mod.can_handle(file_path):
+                    matched = i
+                    break
+            except Exception:
+                continue
 
         if matched >= 0:
             self.combo_importer.setCurrentIndex(matched)
             self.lbl_import_status.setText(
-                f"Detected: {fmt.upper()} \u2014 ‘{self.combo_importer.itemText(matched)}’ pre-selected."
-                f" Override if needed, then click Import & Load.")
+                f"Auto-detected: '{self.combo_importer.itemText(matched)}' selected. "
+                f"Override if needed, then click Import & Load.")
         else:
             self.lbl_import_status.setText(
-                f"Detected: {fmt.upper()} \u2014 no matching importer found. Select manually.")
+                "Auto-detection found no match. Select an importer manually.")
 
-        self.btn_run_import.setEnabled(self.combo_importer.count() > 0)
+        self.btn_run_import.setEnabled(bool(self._importer_modules))
 
     def _run_import(self):
-        """Run the selected importer script on the chosen G-code file."""
-        if not getattr(self, '_import_gcode_path', None):
+        """Invoke the selected plugin's run_import() in a background thread."""
+        if not self._import_gcode_path:
             QMessageBox.warning(self, "No File", "Select a G-code file first.")
             return
 
-        selected = self.combo_importer.currentText()
-        if not selected:
-            QMessageBox.warning(self, "No Importer", "No importer script selected.")
+        idx = self.combo_importer.currentIndex()
+        if idx < 0 or idx >= len(self._importer_modules):
+            QMessageBox.warning(self, "No Importer", "No importer selected.")
             return
+
+        mod = self._importer_modules[idx]
+        fname = self.combo_importer.itemData(idx) or self.combo_importer.currentText()
 
         app_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(app_dir, "Importer", selected)
-        if not os.path.exists(script_path):
-            QMessageBox.critical(self, "Error", f"{selected} not found in Importer directory.")
-            return
-
         csv_dir = os.path.join(app_dir, "CSV")
         os.makedirs(csv_dir, exist_ok=True)
         name_only, _ = os.path.splitext(os.path.basename(self._import_gcode_path))
         csv_out_path = os.path.join(csv_dir, name_only + ".csv")
 
-        self._gcode_csv_out = csv_out_path
-        self._gcode_format = selected
-        self.lbl_import_status.setText(f"Running {selected}...")
+        self._pending_csv_out = csv_out_path
+        self.lbl_import_status.setText(f"Running {fname}...")
         self.btn_run_import.setEnabled(False)
+        self.btn_select_gcode.setEnabled(False)
 
-        self._gcode_process = QProcess(self)
-        self._gcode_process.finished.connect(self._on_gcode_conversion_finished)
-        self._gcode_process.start(sys.executable,
-                                  [script_path, self._import_gcode_path, "-o", csv_out_path])
+        self._import_thread = ImporterThread(mod, self._import_gcode_path, csv_out_path)
+        self._import_thread.finished_signal.connect(self._on_import_finished)
+        self._import_thread.start()
 
-    def _on_gcode_conversion_finished(self, exit_code, exit_status):
-        """Handle async G-code conversion completion."""
+    def _on_import_finished(self, success: bool, payload: str):
+        """Handle ImporterThread completion."""
         self.btn_run_import.setEnabled(True)
-        script_label = getattr(self, '_gcode_format', 'importer')
-        if exit_code == 0:
-            self.lbl_import_status.setText(f"{script_label}: done. Loading CSV...")
-            self.lbl_status.setText("Import successful. CSV loaded.")
-            self.load_file(self._gcode_csv_out)
+        self.btn_select_gcode.setEnabled(True)
+        if success:
+            self.lbl_import_status.setText("Import done. Loading CSV...")
+            self.lbl_status.setText("Import successful.")
+            self.load_file(payload)  # payload = output CSV path
         else:
             QMessageBox.critical(self, "Import Error",
-                                 f"{script_label} failed (exit code {exit_code}).")
+                                 f"Importer raised an error:\n\n{payload}")
             self.lbl_import_status.setText("Import failed.")
             self.lbl_status.setText("Import failed.")
 
