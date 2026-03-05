@@ -440,21 +440,50 @@ class RobotPathViewer(QMainWindow):
         return spin
 
     def _create_general_tab(self):
-        """Build the 'General' tab: file loading, camera, and visuals."""
+        """Build the 'General' tab: CSV loading, G-code import, robot, camera, visuals."""
         self.tab_general = QWidget()
         self.layout_general = QVBoxLayout(self.tab_general)
         self.tabs.addTab(self.tab_general, "General")
 
-        # Data & Model
-        self.layout_general.addWidget(QLabel("<b>DATA & MODEL</b>"))
-
-        self.btn_import = QPushButton("Import G-Code...")
-        self.btn_import.clicked.connect(self.import_gcode_dialog)
-        self.layout_general.addWidget(self.btn_import)
+        # ---- TRAJECTORY (CSV) -------------------------------------------
+        self.layout_general.addWidget(QLabel("<b>TRAJECTORY (CSV)</b>"))
 
         self.btn_load = QPushButton("Open CSV File...")
         self.btn_load.clicked.connect(self.load_file_dialog)
         self.layout_general.addWidget(self.btn_load)
+
+        self.layout_general.addSpacing(12)
+
+        # ---- IMPORT FROM G-CODE -----------------------------------------
+        self.layout_general.addWidget(QLabel("<b>IMPORT FROM G-CODE</b>"))
+
+        self.lbl_import_file = QLabel("No file selected.")
+        self.lbl_import_file.setWordWrap(True)
+        self.layout_general.addWidget(self.lbl_import_file)
+
+        self.btn_select_gcode = QPushButton("Select G-Code File...")
+        self.btn_select_gcode.clicked.connect(self._select_gcode_for_import)
+        self.layout_general.addWidget(self.btn_select_gcode)
+
+        self.layout_general.addWidget(QLabel("Importer:"))
+        self.combo_importer = QComboBox()
+        self.layout_general.addWidget(self.combo_importer)
+
+        self.btn_run_import = QPushButton("Import && Load")
+        self.btn_run_import.clicked.connect(self._run_import)
+        self.btn_run_import.setEnabled(False)
+        self.layout_general.addWidget(self.btn_run_import)
+
+        self.lbl_import_status = QLabel("")
+        self.lbl_import_status.setWordWrap(True)
+        self.layout_general.addWidget(self.lbl_import_status)
+
+        self.populate_importers()
+
+        self.layout_general.addSpacing(12)
+
+        # ---- ROBOT ------------------------------------------------------
+        self.layout_general.addWidget(QLabel("<b>ROBOT</b>"))
 
         self.btn_load_urdf = QPushButton("Load URDF Robot...")
         self.btn_load_urdf.clicked.connect(self.load_urdf_dialog)
@@ -471,9 +500,10 @@ class RobotPathViewer(QMainWindow):
 
         self.lbl_print_time = QLabel("")
         self.layout_general.addWidget(self.lbl_print_time)
-        self.layout_general.addSpacing(15)
 
-        # Camera
+        self.layout_general.addSpacing(12)
+
+        # ---- CAMERA -----------------------------------------------------
         self.layout_general.addWidget(QLabel("<b>CAMERA</b>"))
 
         for label, slot in [("Reset View (Iso)", self.view_isometric),
@@ -483,9 +513,9 @@ class RobotPathViewer(QMainWindow):
             btn.clicked.connect(slot)
             self.layout_general.addWidget(btn)
 
-        self.layout_general.addSpacing(15)
+        self.layout_general.addSpacing(12)
 
-        # Visuals
+        # ---- VISUALS ----------------------------------------------------
         self.layout_general.addWidget(QLabel("<b>VISUALS</b>"))
 
         self.lbl_thickness = QLabel(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
@@ -1081,13 +1111,22 @@ class RobotPathViewer(QMainWindow):
             return 'nc'
         return 'prusa'
 
-    def import_gcode_dialog(self):
-        """Show a file dialog, auto-detect format, convert to CSV, and load."""
+    def populate_importers(self):
+        """Scan the Importer directory and populate the importer combobox."""
+        self.combo_importer.clear()
+        importer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Importer")
+        if os.path.isdir(importer_dir):
+            scripts = sorted(f for f in os.listdir(importer_dir) if f.endswith('.py'))
+            self.combo_importer.addItems(scripts)
+        self.btn_run_import.setEnabled(self.combo_importer.count() > 0
+                                       and hasattr(self, '_import_gcode_path')
+                                       and bool(getattr(self, '_import_gcode_path', None)))
+
+    def _select_gcode_for_import(self):
+        """Open GCODE/ dialog, auto-detect format, pre-select the best importer."""
         app_dir = os.path.dirname(os.path.abspath(__file__))
         gcode_dir = os.path.join(app_dir, "GCODE")
-        csv_dir = os.path.join(app_dir, "CSV")
         os.makedirs(gcode_dir, exist_ok=True)
-        os.makedirs(csv_dir, exist_ok=True)
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select G-Code File", gcode_dir,
@@ -1095,46 +1134,83 @@ class RobotPathViewer(QMainWindow):
         if not file_path:
             return
 
-        base_name = os.path.basename(file_path)
-        name_only, _ = os.path.splitext(base_name)
-        csv_out_path = os.path.join(csv_dir, name_only + ".csv")
+        self._import_gcode_path = file_path
+        self.lbl_import_file.setText(os.path.basename(file_path))
 
-        # Auto-detect format
+        # Auto-detect and pre-select matching importer
         fmt = self._detect_gcode_format(file_path)
-        if fmt == 'nc':
-            script_name = "parse_nc.py"
+        keyword = 'nc' if fmt == 'nc' else 'gcode'
+        matched = -1
+        for i in range(self.combo_importer.count()):
+            if keyword in self.combo_importer.itemText(i).lower():
+                matched = i
+                break
+
+        if matched >= 0:
+            self.combo_importer.setCurrentIndex(matched)
+            self.lbl_import_status.setText(
+                f"Detected: {fmt.upper()} \u2014 ‘{self.combo_importer.itemText(matched)}’ pre-selected."
+                f" Override if needed, then click Import & Load.")
         else:
-            script_name = "parse_gcode.py"
+            self.lbl_import_status.setText(
+                f"Detected: {fmt.upper()} \u2014 no matching importer found. Select manually.")
 
-        self.lbl_status.setText(f"Detected: {fmt.upper()} format. Converting {base_name}...")
+        self.btn_run_import.setEnabled(self.combo_importer.count() > 0)
 
-        script_path = os.path.join(app_dir, script_name)
-        if not os.path.exists(script_path):
-            QMessageBox.critical(self, "Error", f"{script_name} not found in application directory.")
-            self.lbl_status.setText("Conversion failed.")
+    def _run_import(self):
+        """Run the selected importer script on the chosen G-code file."""
+        if not getattr(self, '_import_gcode_path', None):
+            QMessageBox.warning(self, "No File", "Select a G-code file first.")
             return
 
-        # Run conversion asynchronously to avoid blocking the UI
+        selected = self.combo_importer.currentText()
+        if not selected:
+            QMessageBox.warning(self, "No Importer", "No importer script selected.")
+            return
+
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.join(app_dir, "Importer", selected)
+        if not os.path.exists(script_path):
+            QMessageBox.critical(self, "Error", f"{selected} not found in Importer directory.")
+            return
+
+        csv_dir = os.path.join(app_dir, "CSV")
+        os.makedirs(csv_dir, exist_ok=True)
+        name_only, _ = os.path.splitext(os.path.basename(self._import_gcode_path))
+        csv_out_path = os.path.join(csv_dir, name_only + ".csv")
+
         self._gcode_csv_out = csv_out_path
-        self._gcode_format = fmt
+        self._gcode_format = selected
+        self.lbl_import_status.setText(f"Running {selected}...")
+        self.btn_run_import.setEnabled(False)
+
         self._gcode_process = QProcess(self)
         self._gcode_process.finished.connect(self._on_gcode_conversion_finished)
-        self._gcode_process.start(sys.executable, [script_path, file_path, "-o", csv_out_path])
+        self._gcode_process.start(sys.executable,
+                                  [script_path, self._import_gcode_path, "-o", csv_out_path])
 
     def _on_gcode_conversion_finished(self, exit_code, exit_status):
         """Handle async G-code conversion completion."""
-        fmt_label = getattr(self, '_gcode_format', 'unknown').upper()
+        self.btn_run_import.setEnabled(True)
+        script_label = getattr(self, '_gcode_format', 'importer')
         if exit_code == 0:
-            self.lbl_status.setText(f"{fmt_label} conversion done. Loading CSV...")
+            self.lbl_import_status.setText(f"{script_label}: done. Loading CSV...")
+            self.lbl_status.setText("Import successful. CSV loaded.")
             self.load_file(self._gcode_csv_out)
         else:
-            QMessageBox.critical(self, "Conversion Error",
-                                 f"{fmt_label} conversion failed (exit code {exit_code}).")
-            self.lbl_status.setText("Conversion failed.")
+            QMessageBox.critical(self, "Import Error",
+                                 f"{script_label} failed (exit code {exit_code}).")
+            self.lbl_import_status.setText("Import failed.")
+            self.lbl_status.setText("Import failed.")
 
     def load_file_dialog(self):
         """Open a file dialog to select and load a CSV file."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select CSV Data Stream", "", "CSV Files (*.csv);;All Files (*)")
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_dir = os.path.join(app_dir, "CSV")
+        os.makedirs(csv_dir, exist_ok=True)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select CSV Data Stream", csv_dir,
+            "CSV Files (*.csv);;All Files (*)")
         if not file_path:
             return
         self.load_file(file_path)
