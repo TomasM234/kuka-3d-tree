@@ -225,8 +225,8 @@ class TrajectoryTestThread(QThread):
 
 class DataLoaderThread(QThread):
     """Background thread that parses a CSV trajectory file into numpy arrays."""
-
-    finished_signal = pyqtSignal(object, object, object, object, int, float)  # points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s
+    # points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g
+    finished_signal = pyqtSignal(object, object, object, object, int, float, float)
     error_signal = pyqtSignal(str)
 
     def __init__(self, file_path):
@@ -316,18 +316,25 @@ class DataLoaderThread(QThread):
             if skipped > 0:
                 print(f"CSV loader: {skipped} lines skipped due to parse errors.")
 
-            # Compute estimated print time
+            # Compute estimated print time and weight
             estimated_time_s = 0.0
+            estimated_weight_g = 0.0
             for i in range(1, n):
                 dx = xs[i] - xs[i - 1]
                 dy = ys[i] - ys[i - 1]
                 dz = zs[i] - zs[i - 1]
                 dist = (dx * dx + dy * dy + dz * dz) ** 0.5
                 speed = tcp_speeds[i]
+                e_ratio = e_ratios[i]  # g/m
+
                 if speed > 0.001:
                     estimated_time_s += dist / speed
+                    
+                if e_ratio > 0.0:
+                    dist_m = dist / 1000.0  # mm to m
+                    estimated_weight_g += dist_m * e_ratio
 
-            self.finished_signal.emit(points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s)
+            self.finished_signal.emit(points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -529,6 +536,9 @@ class RobotPathViewer(QMainWindow):
 
         self.lbl_print_time = QLabel("")
         self.layout_general.addWidget(self.lbl_print_time)
+
+        self.lbl_print_weight = QLabel("")
+        self.layout_general.addWidget(self.lbl_print_weight)
 
         self.layout_general.addSpacing(12)
 
@@ -1322,7 +1332,7 @@ class RobotPathViewer(QMainWindow):
         QMessageBox.critical(self, "Error Loading File", err_msg)
         self.lbl_status.setText("Load error.")
 
-    def on_load_finished(self, points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s):
+    def on_load_finished(self, points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g):
         """Handle successful CSV load: store data and update UI."""
         if points_xyz is None or len(points_xyz) == 0:
             QMessageBox.warning(self, "No Data", "No valid points found in CSV.")
@@ -1378,6 +1388,7 @@ class RobotPathViewer(QMainWindow):
         else:
             time_str = f"{minutes}m {seconds:02d}s"
         self.lbl_print_time.setText(f"Estimated print time: {time_str}")
+        self.lbl_print_weight.setText(f"Estimated weight: {estimated_weight_g:.1f} g")
 
         self.lbl_status.setText(f"Loaded {num_pts} points.")
 
@@ -1782,7 +1793,7 @@ if __name__ == "__main__":
     # Close splash only after at least 4 s from end-of-imports AND after the
     # main window has been shown (splash.finish waits for the first paint).
     if splash is not None:
-        _MIN_MS = 4000
+        _MIN_MS = 3000
         _remaining = max(0, _MIN_MS - _load_timer.elapsed())
         QTimer.singleShot(_remaining, lambda: splash.finish(window))
 

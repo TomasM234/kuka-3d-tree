@@ -46,7 +46,7 @@ OUTPUT CSV FORMAT
   X/Y/Z     TCP position [mm]
   A/B/C     TCP orientation [deg] — taken from G0/G1 if present, else 0.0
   TCP_SPEED feedrate [mm/s]  (F value / 60)
-  E_RATIO   S_value × material_factor  (0.0 for Travel)
+  E_RATIO   desired extrusion [g/m] = S_value × material_factor  (0.0 for Travel)
   TEMP      last known hotend setpoint [°C]
   FAN_PCT   fan speed [0–100]
   LAYER     layer index (0-based, auto-incremented on Z change during print)
@@ -72,14 +72,20 @@ def get_label() -> str:
 
 def get_material_factor() -> float:
     """
-    Multiplier applied to the raw S-value before writing E_RATIO to CSV.
+    Multiplier applied to the raw S-value to output grams per meter (g/m) in CSV.
 
-    Raw S-value is typically extruder RPM or an equivalent machine unit.
-    The postprocessor (JedenRadekDvanactSloupcu) computes:
-        out_RPM = TCP_SPEED [mm/s] × E_RATIO
+    Raw S-value depends entirely on the CAM software and machine setup
+    (could be RPM, auger speed, arbitrary PWM 0-255, etc.).
 
-    Set factor to 1.0 to pass S directly as E_RATIO.
-    Adjust if your machine uses a different S convention (e.g. S in rad/s).
+    To get E_RATIO in g/m:
+      If S is already calibrated to output exactly 1 gram per meter at S=1,
+      factor = 1.0.
+
+      Otherwise, measure how many grams are extruded per meter at a known S,
+      and calculate the factor: target_g_per_m / (S_value).
+
+    Example: If S=1000 extrudes 1 kg (1000 g) over 1 meter of travel,
+    the factor should be 1.0 (since 1000 × 1.0 = 1000 g/m).
     """
     return 1.0
 

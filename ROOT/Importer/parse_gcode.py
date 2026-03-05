@@ -41,7 +41,7 @@ OUTPUT CSV FORMAT
   X/Y/Z     TCP position [mm]
   A/B/C     TCP orientation [deg]  — always 0.0 from this importer
   TCP_SPEED feedrate [mm/s]
-  E_RATIO   [mm_filament / mm_path] × material_factor  (0.0 for non-print)
+  E_RATIO   desired extrusion [g/m] = raw_ratio × material_factor  (0.0 for non-print)
   TEMP      last known hotend setpoint [°C]
   FAN_PCT   fan speed [0–100]
   LAYER     layer index (0-based)
@@ -68,17 +68,21 @@ def get_label() -> str:
 
 def get_material_factor() -> float:
     """
-    Multiplier applied to raw E_RATIO before writing to CSV.
+    Multiplier applied to raw E_RATIO to output grams per meter (g/m) in CSV.
 
-    E_RATIO (raw) = mm_filament_extruded / mm_path_length
+    Raw E_RATIO from FDM slicer = mm_filament_extruded / mm_path_length
 
-    For 1.75 mm filament the volumetric equivalent is:
-        volumetric [mm³/mm] = raw_ratio × π × (d/2)²  ≈ raw_ratio × 2.405
+    To convert mm³/mm to g/m:
+      1. Calculate filament cross-section area: A = π × (d/2)² [mm²]
+         For 1.75 mm filament, A ≈ 2.405 mm²
+      2. Volumetric flow ratio = raw_ratio × 2.405 [mm³/mm]
+      3. Multiply by material density ρ (e.g. PLA = 1.25 g/cm³ = 0.00125 g/mm³)
+      4. Multiply by 1000 to get g/m (since we have g/mm)
 
-    Set to 1.0 to keep the raw filament-mm unit (default).
-    Adjust if your postprocessor or PLC expects a different unit.
+    Example for 1.75mm PLA:
+      factor = 2.405 × 0.00125 × 1000 = 3.006
     """
-    return 1.0
+    return 3.006
 
 
 # ---------------------------------------------------------------------------
