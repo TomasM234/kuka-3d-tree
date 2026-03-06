@@ -586,7 +586,11 @@ class RobotPathViewer(QMainWindow):
         # Robot section
         self.layout_workplace.addWidget(QLabel("<b>ROBOT</b>"))
 
-        self.btn_load_urdf = QPushButton("Load URDF Robot...")
+        self.lbl_robot_name = QLabel("No robot selected.")
+        self.lbl_robot_name.setWordWrap(True)
+        self.layout_workplace.addWidget(self.lbl_robot_name)
+
+        self.btn_load_urdf = QPushButton("Select Robot...")
         self.btn_load_urdf.clicked.connect(self.load_urdf_dialog)
         self.layout_workplace.addWidget(self.btn_load_urdf)
 
@@ -1268,12 +1272,58 @@ class RobotPathViewer(QMainWindow):
         self.load_file(file_path)
 
     def load_urdf_dialog(self):
-        """Open a file dialog to select and load a URDF robot model."""
-        urdf_dir = os.path.dirname(self.last_urdf_path) if self.last_urdf_path else os.getcwd()
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select URDF Robot File", urdf_dir, "URDF Files (*.urdf);;All Files (*)")
-        if not file_path:
+        """Scan for URDF files and show a selection dialog."""
+        from PyQt6.QtWidgets import QInputDialog
+        import xml.etree.ElementTree as ET
+
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Scan all subdirectories for urdf/ folders containing .urdf files
+        robots = []  # list of (display_name, file_path)
+        for entry in sorted(os.listdir(app_dir)):
+            sub = os.path.join(app_dir, entry)
+            if not os.path.isdir(sub):
+                continue
+            urdf_dir = os.path.join(sub, 'urdf')
+            if not os.path.isdir(urdf_dir):
+                continue
+            for fname in sorted(os.listdir(urdf_dir)):
+                if not fname.endswith('.urdf'):
+                    continue
+                fpath = os.path.join(urdf_dir, fname)
+                # Try to read the robot name from XML
+                robot_name = fname[:-5]  # fallback: filename without extension
+                try:
+                    tree = ET.parse(fpath)
+                    name_attr = tree.getroot().get('name')
+                    if name_attr:
+                        robot_name = name_attr
+                except Exception:
+                    pass
+                robots.append((robot_name, fpath))
+
+        if not robots:
+            QMessageBox.information(self, "No Robots Found",
+                                   "No URDF files found in subdirectories of ROOT.")
             return
-        self.load_urdf(file_path)
+
+        # Show selection dialog
+        labels = [r[0] for r in robots]
+        current = 0
+        if self.last_urdf_path:
+            for i, (_, p) in enumerate(robots):
+                if os.path.normpath(p) == os.path.normpath(self.last_urdf_path):
+                    current = i
+                    break
+
+        chosen, ok = QInputDialog.getItem(
+            self, "Select Robot", "Available robots:",
+            labels, current, False)
+        if not ok:
+            return
+
+        idx = labels.index(chosen)
+        self.load_urdf(robots[idx][1])
 
     def load_urdf(self, file_path):
         """Load a URDF robot model and add its meshes to the scene."""
@@ -1298,6 +1348,16 @@ class RobotPathViewer(QMainWindow):
                 self.robot_actors[link_name] = actor
 
             self.lbl_status.setText("Robot loaded successfully.")
+            # Update the robot name label
+            robot_display = os.path.basename(file_path)[:-5]  # fallback
+            try:
+                import xml.etree.ElementTree as ET
+                name_attr = ET.parse(file_path).getroot().get('name')
+                if name_attr:
+                    robot_display = name_attr
+            except Exception:
+                pass
+            self.lbl_robot_name.setText(f"\U0001F916 {robot_display}")
             self.plotter.reset_camera()
 
             # Enable trajectory test button if data is also loaded
