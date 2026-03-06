@@ -2,9 +2,9 @@
     "print_thickness": 3.0,
     "last_file_path": "D:/Skola/Ostatni/TREE/GIT/ROOT/CSV/coin_cart_ABS_0h24.csv",
     "last_postprocessor": "JedenRadekDvanactSloupcu.py",
-    "last_urdf_path": "d:\\Skola\\Ostatni\\TREE\\GIT\\ROOT\\kuka_robot_descriptions-master\\urdf\\kr250_r2700_2.urdf",
+    "last_urdf_path": "d:\\Skola\\Ostatni\\TREE\\GIT\\ROOT\\kuka_kr16_support\\urdf\\kr16_2.urdf",
     "base_x": -278.0,
-    "base_y": 971.0,
+    "base_y": 978.0,
     "base_z": 470.0,
     "base_a": 90.0,
     "base_b": 0.0,
@@ -20,5 +20,6 @@
     "table_x2": 550.0,
     "table_y2": 650.0,
     "show_table": true,
-    "show_robot": true
+    "show_robot": true,
+    "ik_config": "Elbow Up / Back"
 }

@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import multiprocessing
+import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 # pyvista and pyvistaqt are imported lazily in __main__ (after splash is visible)
@@ -49,6 +50,20 @@ def kuka_base_to_matrix(x, y, z, a, b, c):
 COLOR_PRINT   = np.array([44, 160, 44],   dtype=np.uint8)   # Green
 COLOR_RETRACT = np.array([214, 39, 40],   dtype=np.uint8)   # Red
 COLOR_TRAVEL  = np.array([127, 127, 127], dtype=np.uint8)   # Grey
+
+
+# ---------------------------------------------------------------------------
+# Predefined Initial Robot Configurations (IK Seeds in Radians)
+# Values represent joint angles 1 to 6
+# ---------------------------------------------------------------------------
+IK_CONFIGS = {
+    "Default (Zero)":       [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "Elbow Up / Front":     [0.0, -1.57, 1.57, 0.0, 1.57, 0.0],
+    "Elbow Down / Front":   [0.0, 0.0, -1.57, 0.0, -1.57, 0.0],
+    "Elbow Up / Back":      [3.14, -1.57, 1.57, 0.0, 1.57, 0.0],
+    "Elbow Down / Back":    [3.14, 0.0, -1.57, 0.0, -1.57, 0.0],
+    "Transport":            [0.0, -2.0, 2.0, 0.0, 2.0, 0.0]
+}
 
 
 class ColorStripWidget(QWidget):
@@ -100,7 +115,7 @@ class ColorStripWidget(QWidget):
 # ---------------------------------------------------------------------------
 # Multiprocessing worker for trajectory testing
 # ---------------------------------------------------------------------------
-def _trajectory_worker(urdf_path, points_chunk, base_params, tool_params):
+def _trajectory_worker(urdf_path, points_chunk, oris_chunk, base_params, tool_params, seed_array):
     """Process a chunk of trajectory points in a separate process.
 
     Each chunk runs sequentially with IK seeding: the solution for point N
@@ -124,11 +139,34 @@ def _trajectory_worker(urdf_path, points_chunk, base_params, tool_params):
 
     n = len(points_chunk)
     statuses = np.zeros(n, dtype=np.int8)
-    prev_solution = None
+    
+    # Calculate a dynamic base seed for the very first point in this chunk
+    t_point_first = kuka_base_to_matrix(points_chunk[0][0], points_chunk[0][1], points_chunk[0][2], 
+                                        oris_chunk[0][0], oris_chunk[0][1], oris_chunk[0][2])
+    t_flange_first = (t_base @ t_point_first) @ t_tool_inv
+    first_target_pos = t_flange_first[0:3, 3] / 1000.0
+    
+    # Modify the base A1 angle of the seed array based on target azimuth
+    dynamic_seed = np.copy(seed_array)
+    base_azimuth = math.atan2(first_target_pos[1], first_target_pos[0])
+    
+    # We passed the config string in seed_array? No, seed_array is float array.
+    # To correctly determine if it's "Back" config without passing a string, 
+    # we know "Back" configs have A1=3.14 (pi) in the static seed.
+    # Let's check the first active joint value in seed_array:
+    # If it is > 1.0 (meaning pi), we add pi to azimuth.
+    is_back = False
+    for i, link in enumerate(sim.ik_chain.links):
+        if link.name in sim.active_joints:
+            if dynamic_seed[i] > 1.0:
+                is_back = True
+            dynamic_seed[i] = base_azimuth + (math.pi if is_back else 0.0)
+            break
+            
+    prev_solution = dynamic_seed
 
-    for i, pt in enumerate(points_chunk):
-        t_point = np.eye(4)
-        t_point[0:3, 3] = pt
+    for i, (pt, ori) in enumerate(zip(points_chunk, oris_chunk)):
+        t_point = kuka_base_to_matrix(pt[0], pt[1], pt[2], ori[0], ori[1], ori[2])
         t_flange_target = (t_base @ t_point) @ t_tool_inv
 
         target_pos = t_flange_target[0:3, 3] / 1000.0
@@ -167,13 +205,15 @@ class TrajectoryTestThread(QThread):
     progress_signal = pyqtSignal(int, int)   # current, total
     finished_signal = pyqtSignal(object)     # numpy array of statuses
 
-    def __init__(self, points_xyz, robot_sim, base_params, tool_params):
+    def __init__(self, points_xyz, orientations_abc, robot_sim, base_params, tool_params, seed_array):
         super().__init__()
         self.points_xyz = points_xyz
+        self.orientations_abc = orientations_abc
         self.urdf_path = robot_sim.urdf_path
         self.has_model = robot_sim.urdf_model is not None
         self.base_params = base_params
         self.tool_params = tool_params
+        self.seed_array = seed_array
 
     def run(self):
         if not self.has_model:
@@ -188,7 +228,7 @@ class TrajectoryTestThread(QThread):
         chunks = []
         for start in range(0, total, chunk_size):
             end = min(start + chunk_size, total)
-            chunks.append((start, self.points_xyz[start:end]))
+            chunks.append((start, self.points_xyz[start:end], self.orientations_abc[start:end]))
 
         self.progress_signal.emit(0, total)
 
@@ -198,13 +238,15 @@ class TrajectoryTestThread(QThread):
         try:
             with ProcessPoolExecutor(max_workers=num_workers) as pool:
                 futures = {}
-                for start, chunk_pts in chunks:
+                for start, chunk_pts, chunk_oris in chunks:
                     future = pool.submit(
                         _trajectory_worker,
                         self.urdf_path,
                         chunk_pts,
+                        chunk_oris,
                         self.base_params,
-                        self.tool_params
+                        self.tool_params,
+                        self.seed_array
                     )
                     futures[future] = (start, len(chunk_pts))
 
@@ -625,6 +667,15 @@ class RobotPathViewer(QMainWindow):
         self.btn_test_traj.setEnabled(False)
         self.layout_workplace.addWidget(self.btn_test_traj)
 
+        self.layout_workplace.addSpacing(5)
+
+        # IK Start Configuration
+        self.layout_workplace.addWidget(QLabel("<b>IK Start Configuration:</b>"))
+        self.combo_ik_config = QComboBox()
+        self.combo_ik_config.addItems(list(IK_CONFIGS.keys()))
+        self.combo_ik_config.currentTextChanged.connect(self.on_ik_config_changed)
+        self.layout_workplace.addWidget(self.combo_ik_config)
+
         self.layout_workplace.addSpacing(10)
 
         self.check_show_robot = QCheckBox("Show Robot")
@@ -1026,6 +1077,15 @@ class RobotPathViewer(QMainWindow):
 
         self.save_settings()
 
+        if self.points_xyz is not None:
+            self._request_update()
+
+    def on_ik_config_changed(self, text):
+        """Handle change in IK Initial Configuration."""
+        if getattr(self, "updating_sliders", False):
+            return
+        self.ik_config = text
+        self.save_settings()
         if self.points_xyz is not None:
             self._request_update()
 
@@ -1650,20 +1710,49 @@ class RobotPathViewer(QMainWindow):
             self.plotter.remove_actor(self.tool_actor)
 
         last_pt = self.points_xyz[self.current_step - 1]
+        last_ori = self.orientations_abc[self.current_step - 1]
         tool_mesh = pv.Sphere(radius=self.print_thickness * 0.6, center=last_pt)
         self.tool_actor = self.plotter.add_mesh(tool_mesh, color='cyan', reset_camera=False)
 
         # --- Robot IK follow ---
-        self._update_robot_ik(last_pt)
+        self._update_robot_ik(last_pt, last_ori)
 
-    def _update_robot_ik(self, target_pt):
+    def _get_ik_seed(self, target_pos=None):
+        """Build initial position array from selected IK_CONFIGS, with dynamic base orientation."""
+        if not self.robot_sim.urdf_model:
+            return None
+            
+        angles = IK_CONFIGS.get(self.ik_config, IK_CONFIGS["Default (Zero)"])
+        seed = np.zeros(len(self.robot_sim.ik_chain.links))
+        
+        # Calculate dynamic azimuth towards the target point if provided
+        base_azimuth = 0.0
+        if target_pos is not None:
+            base_azimuth = math.atan2(target_pos[1], target_pos[0])
+        
+        # Match configured angles to active joints
+        angle_idx = 0
+        for i, link in enumerate(self.robot_sim.ik_chain.links):
+            if link.name in self.robot_sim.active_joints and angle_idx < len(angles):
+                if angle_idx == 0 and target_pos is not None:
+                    # Dynamically override A1 based on real target direction
+                    seed[i] = base_azimuth + (math.pi if "Back" in self.ik_config else 0.0)
+                else:
+                    seed[i] = angles[angle_idx]
+                angle_idx += 1
+                
+        return seed
+
+    def _update_robot_ik(self, target_pt, target_ori):
         """Compute IK for the robot to follow the target point and update visuals."""
         if not self.robot_sim.urdf_model or not self.show_robot:
             return
 
         try:
-            t_point = np.eye(4)
-            t_point[0:3, 3] = target_pt
+            t_point = kuka_base_to_matrix(
+                target_pt[0], target_pt[1], target_pt[2],
+                target_ori[0], target_ori[1], target_ori[2]
+            )
 
             t_base = kuka_base_to_matrix(self.base_x, self.base_y, self.base_z, self.base_a, self.base_b, self.base_c)
             t_base_inv = np.linalg.inv(t_base)
@@ -1677,9 +1766,16 @@ class RobotPathViewer(QMainWindow):
             target_pos = t_flange_target[0:3, 3] / 1000.0
             target_ori = t_flange_target[0:3, 0:3]
 
-            ik_solution = self.robot_sim.calculate_ik(target_pos, target_orientation=target_ori)
+            seed_position = self._get_ik_seed(target_pos=target_pos)
+            print(f"[IK DEBUG] Seed configuration: {self.ik_config}, Seed positions: {np.round(seed_position, 2)}")
 
+            ik_solution = self.robot_sim.calculate_ik(
+                target_pos,
+                target_orientation=target_ori,
+                initial_position=seed_position
+            )
             if ik_solution is not None:
+                print(f"[IK DEBUG] Solution generated: {np.round(ik_solution, 2)}")
                 limit_violations = self.robot_sim.check_limits(ik_solution)
                 singularities = self.robot_sim.check_singularities(ik_solution)
 
@@ -1716,8 +1812,11 @@ class RobotPathViewer(QMainWindow):
 
         base_params = (self.base_x, self.base_y, self.base_z, self.base_a, self.base_b, self.base_c)
         tool_params = (self.tool_x, self.tool_y, self.tool_z, self.tool_a, self.tool_b, self.tool_c)
+        seed_array = self._get_ik_seed()
 
-        self.traj_thread = TrajectoryTestThread(self.points_xyz, self.robot_sim, base_params, tool_params)
+        self.traj_thread = TrajectoryTestThread(
+            self.points_xyz, self.orientations_abc, self.robot_sim, base_params, tool_params, seed_array
+        )
         self.traj_thread.progress_signal.connect(self.on_traj_test_progress)
         self.traj_thread.finished_signal.connect(self.on_traj_test_finished)
         self.traj_thread.start()
@@ -1808,6 +1907,7 @@ class RobotPathViewer(QMainWindow):
             self.table_y2 = config.get("table_y2", 650.0)
             self.show_table = config.get("show_table", True)
             self.show_robot = config.get("show_robot", True)
+            self.ik_config = config.get("ik_config", "Elbow Up / Front")
 
             if self.last_postprocessor:
                 idx = self.combo_postprocessor.findText(self.last_postprocessor)
@@ -1838,6 +1938,11 @@ class RobotPathViewer(QMainWindow):
 
             # Robot visibility
             self.check_show_robot.setChecked(self.show_robot)
+
+            # IK Config
+            idx = self.combo_ik_config.findText(self.ik_config)
+            if idx >= 0:
+                self.combo_ik_config.setCurrentIndex(idx)
 
             # Base frame
             self.spin_base_x.setValue(self.base_x)
@@ -1898,7 +2003,8 @@ class RobotPathViewer(QMainWindow):
             "table_x2": self.table_x2,
             "table_y2": self.table_y2,
             "show_table": self.show_table,
-            "show_robot": self.show_robot
+            "show_robot": self.show_robot,
+            "ik_config": self.ik_config
         }
         try:
             with open(self._project_file, 'w', encoding='utf-8') as f:
@@ -1928,6 +2034,7 @@ class RobotPathViewer(QMainWindow):
         self.last_file_path = ""
         self.last_postprocessor = ""
         self.last_urdf_path = ""
+        self.ik_config = "Elbow Up / Front"
         self.base_x = self.base_y = self.base_z = 0.0
         self.base_a = self.base_b = self.base_c = 0.0
         self.tool_x = self.tool_y = self.tool_z = 0.0

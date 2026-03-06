@@ -1,6 +1,6 @@
 {
     "print_thickness": 3.0,
-    "last_file_path": "d:\\Skola\\Ostatni\\TREE\\GIT\\ROOT\\CSV\\g_kod M_prikazy.csv",
+    "last_file_path": "D:/Skola/Ostatni/TREE/GIT/ROOT/CSV/g_kod M_prikazy.csv",
     "last_postprocessor": "JedenRadekDvanactSloupcu.py",
     "last_urdf_path": "d:\\Skola\\Ostatni\\TREE\\GIT\\ROOT\\kuka_robot_descriptions-master\\urdf\\kr250_r2700_2.urdf",
     "base_x": 813.3,
@@ -20,5 +20,6 @@
     "table_x2": 2000.0,
     "table_y2": 2000.0,
     "show_table": true,
-    "show_robot": true
+    "show_robot": true,
+    "ik_config": "Elbow Up / Front"
 }
