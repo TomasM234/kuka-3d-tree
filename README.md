@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="DATA/PNG/LogoSocial.png" alt="KUKA.T.R.E.E. Logo" width="400">
+  <img src="DATA/PNG/Logo.png" alt="KUKA.T.R.E.E. Logo" width="400">
 </p>
 
 # 🤖 KUKA 3D Print Toolkit

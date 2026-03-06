@@ -8,6 +8,18 @@ NC G-code as used by CNC-style 3D printing workflows where the extruder
 is controlled like a spindle: M3 starts it, M5 stops it, and the S value
 sets the "RPM" (or equivalent speed unit chosen by the CAM software).
 
+IMPORTANT — S is a RATE (flow per unit time), not a position!
+Unlike FDM slicers where the E axis gives absolute extruder position
+(amount of material is tied to path length), S-value is a speed:
+the extruder keeps running at S RPM regardless of how fast the robot
+moves. Therefore the amount of material deposited per meter depends
+on BOTH the S-value AND the travel speed (TCP_SPEED):
+
+    material [g/m] = S × factor / TCP_SPEED [mm/s]
+
+The importer performs this conversion automatically so that E_RATIO
+in the output CSV is always in g/m — consistent with FDM importers.
+
 Key commands interpreted:
   G0 [X..] [Y..] [Z..] [A..] [B..] [C..] [F..]
       Rapid move (always classified as Travel).
@@ -46,7 +58,7 @@ OUTPUT CSV FORMAT
   X/Y/Z     TCP position [mm]
   A/B/C     TCP orientation [deg] — taken from G0/G1 if present, else 0.0
   TCP_SPEED feedrate [mm/s]  (F value / 60)
-  E_RATIO   desired extrusion [g/m] = S_value × material_factor  (0.0 for Travel)
+  E_RATIO   desired extrusion [g/m] = S × factor / TCP_SPEED  (0.0 for Travel)
   TEMP      last known hotend setpoint [°C]
   FAN_PCT   fan speed [0–100]
   LAYER     layer index (0-based, auto-incremented on Z change during print)
@@ -72,20 +84,22 @@ def get_label() -> str:
 
 def get_material_factor() -> float:
     """
-    Multiplier applied to the raw S-value to output grams per meter (g/m) in CSV.
+    Calibration constant that converts S-value into a mass-flow unit.
 
-    Raw S-value depends entirely on the CAM software and machine setup
-    (could be RPM, auger speed, arbitrary PWM 0-255, etc.).
+    Since S is a RATE (RPM / auger speed / PWM), the formula is:
+        E_RATIO [g/m] = S × factor / TCP_SPEED [mm/s]
 
-    To get E_RATIO in g/m:
-      If S is already calibrated to output exactly 1 gram per meter at S=1,
-      factor = 1.0.
+    The factor absorbs the machine-specific calibration:
+        factor = grams_per_second_at_S1  (how many g/s the extruder
+                 outputs when S = 1).
 
-      Otherwise, measure how many grams are extruded per meter at a known S,
-      and calculate the factor: target_g_per_m / (S_value).
+    How to determine factor:
+      1. Set S to a known value (e.g. S = 100).
+      2. Run for a known time T (e.g. 60 s) and weigh the output → M grams.
+      3. factor = M / (S × T)  =  grams / (S·seconds)
 
-    Example: If S=1000 extrudes 1 kg (1000 g) over 1 meter of travel,
-    the factor should be 1.0 (since 1000 × 1.0 = 1000 g/m).
+    Example: S=100 for 60 s extrudes 120 g
+      factor = 120 / (100 × 60) = 0.02
     """
     return 1.0
 
@@ -282,8 +296,13 @@ def _parse_move(line: str, state: dict, factor: float):
         state['LayerIndex'] += 1
         state['last_print_z'] = state['Z']
 
-    e_ratio = state['S_value'] * factor if action == 'P' else 0.0
-    tcp_speed = state['F_Speed'] / 60.0
+    tcp_speed = state['F_Speed'] / 60.0  # mm/s
+
+    # S is a rate (flow per time), so g/m = S × factor / TCP_SPEED
+    if action == 'P' and tcp_speed > 0.001:
+        e_ratio = state['S_value'] * factor / tcp_speed
+    else:
+        e_ratio = 0.0
 
     return (f"{action};{state['X']:.3f};{state['Y']:.3f};{state['Z']:.3f};"
             f"{state['A']:.3f};{state['B']:.3f};{state['C']:.3f};"
