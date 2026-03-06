@@ -372,7 +372,12 @@ class RobotPathViewer(QMainWindow):
         self.setWindowTitle("Robot CSV 3D Viewer (High-Performance PyVista Edition)")
         self.resize(1300, 900)
 
-        self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_settings.json")
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        self._meta_file = os.path.join(app_dir, "viewer_settings.json")
+        self._project_dir = os.path.join(app_dir, "Project")
+        os.makedirs(self._project_dir, exist_ok=True)
+        self._project_file = ""  # resolved by _load_meta()
+        self._project_name = "default"
 
         # Data state
         self.points_xyz = None
@@ -480,6 +485,27 @@ class RobotPathViewer(QMainWindow):
         self.tab_general = QWidget()
         self.layout_general = QVBoxLayout(self.tab_general)
         self.tabs.addTab(self.tab_general, "General")
+
+        # ---- PROJECT ----------------------------------------------------
+        self.layout_general.addWidget(QLabel("<b>PROJECT</b>"))
+
+        self.lbl_project_name = QLabel("📁 default")
+        self.lbl_project_name.setWordWrap(True)
+        self.layout_general.addWidget(self.lbl_project_name)
+
+        proj_btn_row = QHBoxLayout()
+        btn_new_proj = QPushButton("New")
+        btn_new_proj.clicked.connect(self._new_project)
+        proj_btn_row.addWidget(btn_new_proj)
+        btn_open_proj = QPushButton("Open")
+        btn_open_proj.clicked.connect(self._open_project)
+        proj_btn_row.addWidget(btn_open_proj)
+        btn_saveas_proj = QPushButton("Save As...")
+        btn_saveas_proj.clicked.connect(self._save_project_as)
+        proj_btn_row.addWidget(btn_saveas_proj)
+        self.layout_general.addLayout(proj_btn_row)
+
+        self.layout_general.addSpacing(12)
 
         # ---- TRAJECTORY (CSV) -------------------------------------------
         self.layout_general.addWidget(QLabel("<b>TRAJECTORY (CSV)</b>"))
@@ -968,6 +994,7 @@ class RobotPathViewer(QMainWindow):
         self.table_x2 = self.spin_table_x2.value()
         self.table_y2 = self.spin_table_y2.value()
         self.draw_table()
+        self.save_settings()
 
     def on_robot_changed(self):
         """Toggle robot mesh visibility."""
@@ -977,6 +1004,7 @@ class RobotPathViewer(QMainWindow):
         for actor in self.robot_actors.values():
             actor.SetVisibility(self.show_robot)
         self.plotter.render()
+        self.save_settings()
 
     def on_transform_changed(self):
         """Handle base/tool transform spinbox changes."""
@@ -995,6 +1023,8 @@ class RobotPathViewer(QMainWindow):
         self.tool_a = self.spin_tool_a.value()
         self.tool_b = self.spin_tool_b.value()
         self.tool_c = self.spin_tool_c.value()
+
+        self.save_settings()
 
         if self.points_xyz is not None:
             self._request_update()
@@ -1462,8 +1492,11 @@ class RobotPathViewer(QMainWindow):
 
     def on_thickness_changed(self, val):
         """Handle extrusion width slider change."""
+        if getattr(self, "updating_sliders", False):
+            return
         self.print_thickness = float(val) / 10.0
         self.lbl_thickness.setText(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
+        self.save_settings()
         if self.points_xyz is not None:
             self._request_update()
 
@@ -1709,50 +1742,129 @@ class RobotPathViewer(QMainWindow):
     # Settings persistence
     # ------------------------------------------------------------------
 
-    def load_settings(self):
-        """Load application settings from JSON file."""
-        if not os.path.exists(self.settings_file):
-            return
+    # ------------------------------------------------------------------
+    # Project management
+    # ------------------------------------------------------------------
 
+    def _load_meta(self):
+        """Read viewer_settings.json to determine which project to open."""
+        proj_name = "default.json"
+        if os.path.exists(self._meta_file):
+            try:
+                with open(self._meta_file, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                    proj_name = meta.get("last_project", "default.json")
+            except Exception:
+                pass
+        self._project_file = os.path.join(self._project_dir, proj_name)
+        self._project_name = os.path.splitext(proj_name)[0]
+
+    def _save_meta(self):
+        """Write the current project name to viewer_settings.json."""
         try:
-            with open(self.settings_file, 'r', encoding='utf-8') as f:
+            with open(self._meta_file, 'w', encoding='utf-8') as f:
+                json.dump({"last_project": os.path.basename(self._project_file)}, f, indent=4)
+        except Exception as e:
+            print(f"Error saving meta: {e}")
+
+    def load_settings(self):
+        """Load meta + project settings."""
+        self._load_meta()
+        self._load_project(self._project_file)
+
+    def _load_project(self, path):
+        """Load project settings from a JSON file."""
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                self.print_thickness = config.get("print_thickness", 1.0)
-                self.last_file_path = config.get("last_file_path", "")
-                self.last_postprocessor = config.get("last_postprocessor", "")
-                self.last_urdf_path = config.get("last_urdf_path", "")
 
-                self.base_x = config.get("base_x", 0.0)
-                self.base_y = config.get("base_y", 0.0)
-                self.base_z = config.get("base_z", 0.0)
-                self.base_a = config.get("base_a", 0.0)
-                self.base_b = config.get("base_b", 0.0)
-                self.base_c = config.get("base_c", 0.0)
+            self._project_file = path
+            self._project_name = os.path.splitext(os.path.basename(path))[0]
 
-                self.tool_x = config.get("tool_x", 0.0)
-                self.tool_y = config.get("tool_y", 0.0)
-                self.tool_z = config.get("tool_z", 0.0)
-                self.tool_a = config.get("tool_a", 0.0)
-                self.tool_b = config.get("tool_b", 0.0)
-                self.tool_c = config.get("tool_c", 0.0)
+            self.print_thickness = config.get("print_thickness", 1.0)
+            self.last_file_path = config.get("last_file_path", "")
+            self.last_postprocessor = config.get("last_postprocessor", "")
+            self.last_urdf_path = config.get("last_urdf_path", "")
 
-                self.table_x1 = config.get("table_x1", 0.0)
-                self.table_y1 = config.get("table_y1", 0.0)
-                self.table_x2 = config.get("table_x2", 550.0)
-                self.table_y2 = config.get("table_y2", 650.0)
-                self.show_table = config.get("show_table", True)
-                self.show_robot = config.get("show_robot", True)
+            self.base_x = config.get("base_x", 0.0)
+            self.base_y = config.get("base_y", 0.0)
+            self.base_z = config.get("base_z", 0.0)
+            self.base_a = config.get("base_a", 0.0)
+            self.base_b = config.get("base_b", 0.0)
+            self.base_c = config.get("base_c", 0.0)
 
-                if self.last_postprocessor:
-                    idx = self.combo_postprocessor.findText(self.last_postprocessor)
-                    if idx >= 0:
-                        self.combo_postprocessor.setCurrentIndex(idx)
+            self.tool_x = config.get("tool_x", 0.0)
+            self.tool_y = config.get("tool_y", 0.0)
+            self.tool_z = config.get("tool_z", 0.0)
+            self.tool_a = config.get("tool_a", 0.0)
+            self.tool_b = config.get("tool_b", 0.0)
+            self.tool_c = config.get("tool_c", 0.0)
+
+            self.table_x1 = config.get("table_x1", 0.0)
+            self.table_y1 = config.get("table_y1", 0.0)
+            self.table_x2 = config.get("table_x2", 550.0)
+            self.table_y2 = config.get("table_y2", 650.0)
+            self.show_table = config.get("show_table", True)
+            self.show_robot = config.get("show_robot", True)
+
+            if self.last_postprocessor:
+                idx = self.combo_postprocessor.findText(self.last_postprocessor)
+                if idx >= 0:
+                    self.combo_postprocessor.setCurrentIndex(idx)
+
+            self._apply_project_to_ui()
 
         except Exception as e:
-            print(f"Error loading settings: {e}")
+            print(f"Error loading project: {e}")
+
+    def _apply_project_to_ui(self):
+        """Push current project values into all UI widgets."""
+        self.updating_sliders = True
+        try:
+            self.lbl_project_name.setText(f"\U0001F4C1 {self._project_name}")
+
+            # Thickness
+            self.slider_thick.setValue(int(self.print_thickness * 10))
+            self.lbl_thickness.setText(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
+
+            # Table
+            self.check_show_table.setChecked(self.show_table)
+            self.spin_table_x1.setValue(self.table_x1)
+            self.spin_table_y1.setValue(self.table_y1)
+            self.spin_table_x2.setValue(self.table_x2)
+            self.spin_table_y2.setValue(self.table_y2)
+
+            # Robot visibility
+            self.check_show_robot.setChecked(self.show_robot)
+
+            # Base frame
+            self.spin_base_x.setValue(self.base_x)
+            self.spin_base_y.setValue(self.base_y)
+            self.spin_base_z.setValue(self.base_z)
+            self.spin_base_a.setValue(self.base_a)
+            self.spin_base_b.setValue(self.base_b)
+            self.spin_base_c.setValue(self.base_c)
+
+            # Tool frame
+            self.spin_tool_x.setValue(self.tool_x)
+            self.spin_tool_y.setValue(self.tool_y)
+            self.spin_tool_z.setValue(self.tool_z)
+            self.spin_tool_a.setValue(self.tool_a)
+            self.spin_tool_b.setValue(self.tool_b)
+            self.spin_tool_c.setValue(self.tool_c)
+        finally:
+            self.updating_sliders = False
 
     def save_settings(self):
-        """Save application settings to JSON file."""
+        """Save current project (auto-save)."""
+        self._save_project()
+
+    def _save_project(self):
+        """Write all workspace settings to the current project file."""
+        if not self._project_file:
+            return
         config = {
             "print_thickness": self.print_thickness,
             "last_file_path": self.last_file_path,
@@ -1778,14 +1890,109 @@ class RobotPathViewer(QMainWindow):
             "show_robot": self.show_robot
         }
         try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
+            with open(self._project_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4)
         except Exception as e:
-            print(f"Error saving settings: {e}")
+            print(f"Error saving project: {e}")
+
+    def _new_project(self):
+        """Create a new project with default settings."""
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "New Project", "Project name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not name.endswith('.json'):
+            name += '.json'
+        path = os.path.join(self._project_dir, name)
+        if os.path.exists(path):
+            QMessageBox.warning(self, "Exists", f"Project '{name}' already exists.")
+            return
+
+        # Save current project first
+        self._save_project()
+
+        # Reset to defaults
+        self.print_thickness = 1.0
+        self.last_file_path = ""
+        self.last_postprocessor = ""
+        self.last_urdf_path = ""
+        self.base_x = self.base_y = self.base_z = 0.0
+        self.base_a = self.base_b = self.base_c = 0.0
+        self.tool_x = self.tool_y = self.tool_z = 0.0
+        self.tool_a = self.tool_b = self.tool_c = 0.0
+        self.table_x1 = self.table_y1 = 0.0
+        self.table_x2 = 550.0
+        self.table_y2 = 650.0
+        self.show_table = True
+        self.show_robot = True
+
+        self._project_file = path
+        self._project_name = os.path.splitext(os.path.basename(path))[0]
+        self._save_project()
+        self._save_meta()
+        self._apply_project_to_ui()
+        self.lbl_status.setText(f"New project '{self._project_name}' created.")
+
+    def _open_project(self):
+        """Show a list of available projects and load the selected one."""
+        from PyQt6.QtWidgets import QInputDialog
+        projects = sorted(f for f in os.listdir(self._project_dir) if f.endswith('.json'))
+        if not projects:
+            QMessageBox.information(self, "No Projects", "No projects found in Project/ directory.")
+            return
+
+        labels = [os.path.splitext(f)[0] for f in projects]
+        current = 0
+        for i, f in enumerate(projects):
+            if f == os.path.basename(self._project_file):
+                current = i
+                break
+
+        chosen, ok = QInputDialog.getItem(
+            self, "Open Project", "Available projects:",
+            labels, current, False)
+        if not ok:
+            return
+
+        # Save current project before switching
+        self._save_project()
+
+        idx = labels.index(chosen)
+        path = os.path.join(self._project_dir, projects[idx])
+        self._load_project(path)
+        self._save_meta()
+
+        # Reload robot if changed
+        if self.last_urdf_path and os.path.exists(self.last_urdf_path):
+            self.load_urdf(self.last_urdf_path)
+
+        self.lbl_status.setText(f"Opened project '{self._project_name}'.")
+
+    def _save_project_as(self):
+        """Save the current project under a new name."""
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self, "Save Project As", "New project name:",
+            text=self._project_name)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not name.endswith('.json'):
+            name += '.json'
+        path = os.path.join(self._project_dir, name)
+
+        self._project_file = path
+        self._project_name = os.path.splitext(name)[0]
+        self._save_project()
+        self._save_meta()
+        self.lbl_project_name.setText(f"\U0001F4C1 {self._project_name}")
+        self.lbl_status.setText(f"Project saved as '{self._project_name}'.")
 
     def closeEvent(self, event):
-        """Save settings before closing the application."""
-        self.save_settings()
+        """Save project and meta before closing the application."""
+        self._save_project()
+        self._save_meta()
         event.accept()
 
 
