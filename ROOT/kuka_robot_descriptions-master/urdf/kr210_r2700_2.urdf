@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  KUKA KR 210 R2700-2  —  Flattened URDF (no xacro dependency)
+  =============================================================
+  Generated from kuka_robot_descriptions-master config/meshes.
+
+  Kinematic chain:  world → base_link → link_1 → ... → link_6 → flange → tool0
+  All joint axes:   Z (0 0 1)  — rotations parametrized via rpy on the origin
+  Mesh paths:       relative to this file's parent directory  (../meshes/...)
+  Units:            metres, radians, kg
+-->
+<robot name="kuka_kr210_r2700_2">
+
+  <!-- ============================================================= -->
+  <!-- MATERIALS                                                      -->
+  <!-- ============================================================= -->
+  <material name="KukaPedestal">
+    <color rgba="0.5 0.47 0.38 1.0"/>
+  </material>
+  <material name="KukaOrange">
+    <color rgba="0.96 0.47 0.16 1.0"/>
+  </material>
+
+  <!-- ============================================================= -->
+  <!-- LINKS                                                          -->
+  <!-- ============================================================= -->
+
+  <!-- Fixed world frame -->
+  <link name="world"/>
+
+  <!-- Base link -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/base_link.stl"/>
+      </geometry>
+      <material name="KukaPedestal"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/base_link.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="225.96"/>
+      <inertia ixx="13.2088588" ixy="0" ixz="0"
+               iyy="31.49498532" iyz="0"
+               izz="33.88389082"/>
+    </inertial>
+  </link>
+
+  <!-- Link 1 -->
+  <link name="link_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/link_1.stl"/>
+      </geometry>
+      <material name="KukaOrange"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/link_1.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="363.07"/>
+      <inertia ixx="57.79570981" ixy="0" ixz="0"
+               iyy="5.63272996" iyz="0"
+               izz="58.55984559"/>
+    </inertial>
+  </link>
+
+  <!-- Link 2 -->
+  <link name="link_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/link_2.stl"/>
+      </geometry>
+      <material name="KukaOrange"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/link_2.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="232.06"/>
+      <inertia ixx="3.46995403" ixy="0" ixz="0"
+               iyy="21.17130073" iyz="0"
+               izz="22.20677491"/>
+    </inertial>
+  </link>
+
+  <!-- Link 3 -->
+  <link name="link_3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/link_3.stl"/>
+      </geometry>
+      <material name="KukaOrange"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/link_3.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="190.33"/>
+      <inertia ixx="0.16132437" ixy="0" ixz="0"
+               iyy="1.36451395" iyz="0"
+               izz="1.39158128"/>
+    </inertial>
+  </link>
+
+  <!-- Link 4 -->
+  <link name="link_4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/link_4.stl"/>
+      </geometry>
+      <material name="KukaOrange"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/link_4.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="42.412"/>
+      <inertia ixx="0.20011191" ixy="0" ixz="0"
+               iyy="0.12055363" iyz="0"
+               izz="0.22095649"/>
+    </inertial>
+  </link>
+
+  <!-- Link 5 -->
+  <link name="link_5">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/link_5.stl"/>
+      </geometry>
+      <material name="KukaOrange"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/link_5.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="16.991"/>
+      <inertia ixx="0.0114565" ixy="0" ixz="0"
+               iyy="0.0114565" iyz="0"
+               izz="0.014535"/>
+    </inertial>
+  </link>
+
+  <!-- Link 6 -->
+  <link name="link_6">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/visual/link_6.stl"/>
+      </geometry>
+      <material name="KukaOrange"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="../meshes/kr210_r2700_2/collision/link_6.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="6.603"/>
+      <inertia ixx="0.03694113" ixy="0" ixz="0"
+               iyy="0.03695315" iyz="0"
+               izz="0.048251"/>
+    </inertial>
+  </link>
+
+  <!-- Flange (empty link — EEF attachment point) -->
+  <link name="flange"/>
+
+  <!-- ROS-Industrial base frame -->
+  <link name="base"/>
+
+  <!-- Tool0 (KUKA $TOOL coordinate system) -->
+  <link name="tool0"/>
+
+  <!-- ============================================================= -->
+  <!-- JOINTS                                                         -->
+  <!-- ============================================================= -->
+
+  <!-- world → base_link (fixed) -->
+  <joint name="world-base_link" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Joint 1:  base_link → link_1
+       kinematics: xyz=(0, 0, 0)  rpy=(-180°, 0, 0) = (-π, 0, 0)
+       axis: (0 0 1)
+       limits: -185° .. +185° = -3.22885 .. 3.22885 rad
+       velocity: 120°/s = 2.09440 rad/s
+       effort: 7290 Nm -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0" rpy="-3.14159265 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.22885912" upper="3.22885912"
+           velocity="2.09439510" effort="7290"/>
+  </joint>
+
+  <!-- Joint 2:  link_1 → link_2
+       kinematics: xyz=(0.33, 0, -0.645)  rpy=(90°, 0, 0) = (π/2, 0, 0)
+       limits: -140° .. -5° = -2.44346 .. -0.08727 rad
+       velocity: 115°/s = 2.00713 rad/s
+       effort: 8910 Nm -->
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0.33 0 -0.645" rpy="1.57079633 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.44346095" upper="-0.08726646"
+           velocity="2.00712864" effort="8910"/>
+  </joint>
+
+  <!-- Joint 3:  link_2 → link_3
+       kinematics: xyz=(1.15, 0, 0)  rpy=(0, 0, -90°) = (0, 0, -π/2)
+       limits: -120° .. +168° = -2.09440 .. 2.93215 rad
+       velocity: 112°/s = 1.95477 rad/s
+       effort: 6988.85 Nm -->
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="1.15 0 0" rpy="0 0 -1.57079633"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.09439510" upper="2.93215314"
+           velocity="1.95476876" effort="6988.84717"/>
+  </joint>
+
+  <!-- Joint 4:  link_3 → link_4
+       kinematics: xyz=(0.115, 0, 0)  rpy=(90°, 0, 0) = (π/2, 0, 0)
+       limits: -350° .. +350° = -6.10865 .. 6.10865 rad
+       velocity: 179°/s = 3.12414 rad/s
+       effort: 2274.29 Nm -->
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <origin xyz="0.115 0 0" rpy="1.57079633 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.10865238" upper="6.10865238"
+           velocity="3.12413936" effort="2274.29199"/>
+  </joint>
+
+  <!-- Joint 5:  link_4 → link_5
+       kinematics: xyz=(0, 0, -1.22)  rpy=(-90°, 0, 0) = (-π/2, 0, 0)
+       limits: -125° .. +125° = -2.18166 .. 2.18166 rad
+       velocity: 172°/s = 3.00197 rad/s
+       effort: 1398.30 Nm -->
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <origin xyz="0 0 -1.22" rpy="-1.57079633 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.18166156" upper="2.18166156"
+           velocity="3.00196631" effort="1398.30298"/>
+  </joint>
+
+  <!-- Joint 6:  link_5 → link_6
+       kinematics: xyz=(0, 0, 0)  rpy=(90°, 0, 0) = (π/2, 0, 0)
+       limits: -350° .. +350° = -6.10865 .. 6.10865 rad
+       velocity: 220°/s = 3.83972 rad/s
+       effort: 781.55 Nm -->
+  <joint name="joint_6" type="revolute">
+    <parent link="link_5"/>
+    <child link="link_6"/>
+    <origin xyz="0 0 0" rpy="1.57079633 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.10865238" upper="6.10865238"
+           velocity="3.83972435" effort="781.554626"/>
+  </joint>
+
+  <!-- base_link → base (ROS-Industrial $ROBROOT, fixed) -->
+  <joint name="base_link-base" type="fixed">
+    <parent link="base_link"/>
+    <child link="base"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- link_6 → flange (EEF attachment, fixed)
+       flange: xyz=(0, 0, -0.215)  rpy=(0, 90°, 0) = (0, π/2, 0) -->
+  <joint name="joint_6-flange" type="fixed">
+    <parent link="link_6"/>
+    <child link="flange"/>
+    <origin xyz="0 0 -0.215" rpy="0 1.57079633 0"/>
+  </joint>
+
+  <!-- flange → tool0 (KUKA $TOOL, fixed)
+       tool0: rpy=(0, 90°, 0) = (0, π/2, 0) -->
+  <joint name="flange-tool0" type="fixed">
+    <parent link="flange"/>
+    <child link="tool0"/>
+    <origin xyz="0 0 0" rpy="0 1.57079633 0"/>
+  </joint>
+
+</robot>
