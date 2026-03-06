@@ -139,6 +139,33 @@ class RobotSimulator:
             ik_solution = self.ik_chain.inverse_kinematics(
                 target_position, **kwargs)
 
+        if ik_solution is not None and self.urdf_model is not None:
+            # Normalize angles to fit joint limits (handles e.g. 242 deg -> -118 deg)
+            for i, link in enumerate(self.ik_chain.links):
+                if link.name in self.active_joints:
+                    j = self._joint_map.get(link.name)
+                    if j and j.limit is not None:
+                        lower = j.limit.lower if j.limit.lower is not None else -float('inf')
+                        upper = j.limit.upper if j.limit.upper is not None else float('inf')
+                        val = ik_solution[i]
+                        
+                        # Only normalize if we are currently outside limits
+                        if val < lower or val > upper:
+                            # Try adding/subtracting 2*pi
+                            val_wrapped = val
+                            while val_wrapped > upper and (val_wrapped - 2 * np.pi) >= lower:
+                                val_wrapped -= 2 * np.pi
+                            while val_wrapped < lower and (val_wrapped + 2 * np.pi) <= upper:
+                                val_wrapped += 2 * np.pi
+                                
+                            # If still outside, pick the closest 2*pi wrapped representation
+                            if val_wrapped > upper and abs((val_wrapped - 2 * np.pi) - upper) < abs(val_wrapped - upper):
+                                val_wrapped -= 2 * np.pi
+                            elif val_wrapped < lower and abs((val_wrapped + 2 * np.pi) - lower) < abs(val_wrapped - lower):
+                                val_wrapped += 2 * np.pi
+                                
+                            ik_solution[i] = val_wrapped
+
         return ik_solution
         
     def get_forward_transforms(self, joint_angles):

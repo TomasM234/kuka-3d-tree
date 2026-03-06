@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import subprocess
 import sys
@@ -23,10 +23,10 @@ RobotSimulator = None
 
 
 # ---------------------------------------------------------------------------
-# Shared utility: KUKA ZYX Euler → 4×4 homogeneous matrix
+# Shared utility: KUKA ZYX Euler â†’ 4Ă—4 homogeneous matrix
 # ---------------------------------------------------------------------------
 def kuka_base_to_matrix(x, y, z, a, b, c):
-    """Convert KUKA BASE/TOOL parameters (X,Y,Z,A,B,C) to a 4×4 homogeneous
+    """Convert KUKA BASE/TOOL parameters (X,Y,Z,A,B,C) to a 4Ă—4 homogeneous
     transformation matrix using ZYX (A-B-C) Euler convention."""
     an = np.radians(a)
     bn = np.radians(b)
@@ -42,6 +42,25 @@ def kuka_base_to_matrix(x, y, z, a, b, c):
     R[1, 3] = y
     R[2, 3] = z
     return R
+
+def matrix_to_kuka_abc(matrix):
+    """Convert a 4x4 homogeneous transformation matrix to KUKA BASE/TOOL 
+    parameters (X,Y,Z,A,B,C) using ZYX Euler convention."""
+    x = matrix[0, 3]
+    y = matrix[1, 3]
+    z = matrix[2, 3]
+    
+    sy = math.sqrt(matrix[0,0]**2 + matrix[1,0]**2)
+    singular = sy < 1e-6
+    if not singular:
+        a = math.atan2(matrix[1,0], matrix[0,0])
+        b = math.atan2(-matrix[2,0], sy)
+        c = math.atan2(matrix[2,1], matrix[2,2])
+    else:
+        a = math.atan2(-matrix[1,2], matrix[1,1])
+        b = math.atan2(-matrix[2,0], sy)
+        c = 0
+    return x, y, z, math.degrees(a), math.degrees(b), math.degrees(c)
 
 
 # ---------------------------------------------------------------------------
@@ -115,12 +134,15 @@ class ColorStripWidget(QWidget):
 # ---------------------------------------------------------------------------
 # Multiprocessing worker for trajectory testing
 # ---------------------------------------------------------------------------
-def _trajectory_worker(urdf_path, points_chunk, oris_chunk, base_params, tool_params, seed_array):
+def _trajectory_worker(urdf_path, points_chunk, oris_chunk, base_params, tool_params, seed_array, seed_candidates):
     """Process a chunk of trajectory points in a separate process.
 
     Each chunk runs sequentially with IK seeding: the solution for point N
-    is used as the initial guess for point N+1. This dramatically reduces
-    the number of scipy optimizer iterations since adjacent points are close.
+    is used as the initial guess for point N+1.
+
+    At chunk start, multiple seed candidates are tried and the best solution
+    is selected. This reduces false "limit" hits caused by selecting a poor
+    IK branch at chunk boundaries.
 
     Returns:
         numpy array of int8 statuses for this chunk.
@@ -139,33 +161,77 @@ def _trajectory_worker(urdf_path, points_chunk, oris_chunk, base_params, tool_pa
 
     n = len(points_chunk)
     statuses = np.zeros(n, dtype=np.int8)
-    
-    # Calculate a dynamic base seed for the very first point in this chunk
-    t_point_first = kuka_base_to_matrix(points_chunk[0][0], points_chunk[0][1], points_chunk[0][2], 
-                                        oris_chunk[0][0], oris_chunk[0][1], oris_chunk[0][2])
+    if n == 0:
+        return statuses
+
+    def _classify(solution):
+        if solution is None:
+            return 3  # Unreachable
+        if len(sim.check_limits(solution)) > 0:
+            return 2  # Limit
+        if len(sim.check_singularities(solution)) > 0:
+            return 1  # Singularity
+        return 0  # OK
+
+    def _dynamicize_seed(seed_template, target_pos_m):
+        """Adjust A1 seed based on target azimuth while preserving front/back."""
+        dyn = np.array(seed_template, dtype=np.float64, copy=True)
+        base_azimuth = math.atan2(target_pos_m[1], target_pos_m[0])
+        is_back = False
+        for j, link in enumerate(sim.ik_chain.links):
+            if link.name in sim.active_joints:
+                if dyn[j] > 1.0:
+                    is_back = True
+                dyn[j] = base_azimuth + (math.pi if is_back else 0.0)
+                break
+        return dyn
+
+    # Resolve first target of this chunk
+    first_pt = points_chunk[0]
+    first_ori = oris_chunk[0]
+    t_point_first = kuka_base_to_matrix(
+        first_pt[0], first_pt[1], first_pt[2],
+        first_ori[0], first_ori[1], first_ori[2]
+    )
     t_flange_first = (t_base @ t_point_first) @ t_tool_inv
     first_target_pos = t_flange_first[0:3, 3] / 1000.0
-    
-    # Modify the base A1 angle of the seed array based on target azimuth
-    dynamic_seed = np.copy(seed_array)
-    base_azimuth = math.atan2(first_target_pos[1], first_target_pos[0])
-    
-    # We passed the config string in seed_array? No, seed_array is float array.
-    # To correctly determine if it's "Back" config without passing a string, 
-    # we know "Back" configs have A1=3.14 (pi) in the static seed.
-    # Let's check the first active joint value in seed_array:
-    # If it is > 1.0 (meaning pi), we add pi to azimuth.
-    is_back = False
-    for i, link in enumerate(sim.ik_chain.links):
-        if link.name in sim.active_joints:
-            if dynamic_seed[i] > 1.0:
-                is_back = True
-            dynamic_seed[i] = base_azimuth + (math.pi if is_back else 0.0)
-            break
-            
-    prev_solution = dynamic_seed
+    first_target_ori = t_flange_first[0:3, 0:3]
 
-    for i, (pt, ori) in enumerate(zip(points_chunk, oris_chunk)):
+    # Build chunk-start candidates: selected config first, then alternates
+    candidate_templates = [seed_array]
+    if seed_candidates:
+        candidate_templates.extend(seed_candidates)
+
+    best_seed = _dynamicize_seed(candidate_templates[0], first_target_pos)
+    best_solution = sim.calculate_ik(
+        first_target_pos,
+        target_orientation=first_target_ori,
+        initial_position=best_seed
+    )
+    best_status = _classify(best_solution)
+
+    for template in candidate_templates[1:]:
+        candidate_seed = _dynamicize_seed(template, first_target_pos)
+        candidate_solution = sim.calculate_ik(
+            first_target_pos,
+            target_orientation=first_target_ori,
+            initial_position=candidate_seed
+        )
+        candidate_status = _classify(candidate_solution)
+        if candidate_status < best_status:
+            best_status = candidate_status
+            best_solution = candidate_solution
+            best_seed = candidate_seed
+            if best_status == 0:
+                break
+
+    statuses[0] = best_status
+    prev_solution = best_solution if best_solution is not None else best_seed
+
+    # Continue sequentially inside chunk
+    for i in range(1, n):
+        pt = points_chunk[i]
+        ori = oris_chunk[i]
         t_point = kuka_base_to_matrix(pt[0], pt[1], pt[2], ori[0], ori[1], ori[2])
         t_flange_target = (t_base @ t_point) @ t_tool_inv
 
@@ -177,17 +243,11 @@ def _trajectory_worker(urdf_path, points_chunk, oris_chunk, base_params, tool_pa
             target_orientation=target_ori,
             initial_position=prev_solution
         )
+        status = _classify(ik_solution)
+        statuses[i] = status
 
-        if ik_solution is None:
-            statuses[i] = 3  # Unreachable
-        else:
-            prev_solution = ik_solution  # seed next iteration
-            if len(sim.check_limits(ik_solution)) > 0:
-                statuses[i] = 2  # Limit
-            elif len(sim.check_singularities(ik_solution)) > 0:
-                statuses[i] = 1  # Singularity
-            else:
-                statuses[i] = 0  # OK
+        if ik_solution is not None:
+            prev_solution = ik_solution
 
     return statuses
 
@@ -196,16 +256,16 @@ class TrajectoryTestThread(QThread):
     """Background thread that splits trajectory across CPU cores for parallel IK testing.
 
     Optimizations over the naive approach:
-    1. IK seeding — each point uses the previous solution as the optimizer start,
-       reducing convergence time by 5–10×.
-    2. Multiprocessing — trajectory is divided into chunks processed in parallel,
-       giving an additional N× speedup where N = number of CPU cores.
+    1. IK seeding â€” each point uses the previous solution as the optimizer start,
+       reducing convergence time by 5â€“10Ă—.
+    2. Multiprocessing â€” trajectory is divided into chunks processed in parallel,
+       giving an additional NĂ— speedup where N = number of CPU cores.
     """
 
     progress_signal = pyqtSignal(int, int)   # current, total
     finished_signal = pyqtSignal(object)     # numpy array of statuses
 
-    def __init__(self, points_xyz, orientations_abc, robot_sim, base_params, tool_params, seed_array):
+    def __init__(self, points_xyz, orientations_abc, robot_sim, base_params, tool_params, seed_array, seed_candidates):
         super().__init__()
         self.points_xyz = points_xyz
         self.orientations_abc = orientations_abc
@@ -214,6 +274,7 @@ class TrajectoryTestThread(QThread):
         self.base_params = base_params
         self.tool_params = tool_params
         self.seed_array = seed_array
+        self.seed_candidates = seed_candidates
 
     def run(self):
         if not self.has_model:
@@ -246,7 +307,8 @@ class TrajectoryTestThread(QThread):
                         chunk_oris,
                         self.base_params,
                         self.tool_params,
-                        self.seed_array
+                        self.seed_array,
+                        self.seed_candidates
                     )
                     futures[future] = (start, len(chunk_pts))
 
@@ -474,6 +536,11 @@ class RobotPathViewer(QMainWindow):
         self.tool_actor = None
 
         self.updating_sliders = False
+        
+        # IK state: keep the previous solution for continuity and only
+        # re-apply the selected preset when the user explicitly changes it.
+        self.last_ik_solution = None
+        self._force_ik_seed_from_config = False
 
         # Debounce timer for slider-driven updates
         self._render_timer = QTimer()
@@ -513,6 +580,33 @@ class RobotPathViewer(QMainWindow):
         self.tabs.tabBar().setExpanding(True)
         self.left_layout.addWidget(self.tabs)
 
+        # ---- CURRENT SYSTEM POSE -----------------------------------------
+        self.left_layout.addSpacing(10)
+        self.left_layout.addWidget(QLabel("<b>CURRENT ROBOT POSE</b>"))
+        
+        self.pose_grid = QVBoxLayout()
+        self.pose_grid.setContentsMargins(5, 5, 5, 5)
+        self.pose_grid.setSpacing(2)
+        
+        self.lbl_pose_xyz = QLabel("TCP mm: X:- Y:- Z:-")
+        self.lbl_pose_abc = QLabel("TCP deg: A:- B:- C:-")
+        self.lbl_pose_j123 = QLabel("J1-3 deg: A1:- A2:- A3:-")
+        self.lbl_pose_j456 = QLabel("J4-6 deg: A4:- A5:- A6:-")
+        
+        for lbl in [self.lbl_pose_xyz, self.lbl_pose_abc, self.lbl_pose_j123, self.lbl_pose_j456]:
+            lbl.setStyleSheet("font-family: monospace; font-size: 11px;")
+            lbl.setWordWrap(False)
+            lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            lbl.setFixedHeight(lbl.fontMetrics().height() + 6)
+            lbl.setToolTip(lbl.text())
+            
+        self.pose_grid.addWidget(self.lbl_pose_xyz)
+        self.pose_grid.addWidget(self.lbl_pose_abc)
+        self.pose_grid.addWidget(self.lbl_pose_j123)
+        self.pose_grid.addWidget(self.lbl_pose_j456)
+        
+        self.left_layout.addLayout(self.pose_grid)
+
     def _create_spinbox(self, min_val, max_val, suffix, value, callback):
         """Helper to create a configured QDoubleSpinBox and connect its signal."""
         spin = QDoubleSpinBox()
@@ -531,7 +625,7 @@ class RobotPathViewer(QMainWindow):
         # ---- PROJECT ----------------------------------------------------
         self.layout_general.addWidget(QLabel("<b>PROJECT</b>"))
 
-        self.lbl_project_name = QLabel("📁 default")
+        self.lbl_project_name = QLabel("đź“ default")
         self.lbl_project_name.setWordWrap(True)
         self.layout_general.addWidget(self.lbl_project_name)
 
@@ -689,9 +783,9 @@ class RobotPathViewer(QMainWindow):
         self.spin_base_x = self._create_spinbox(-5000, 5000, " mm", self.base_x, self.on_transform_changed)
         self.spin_base_y = self._create_spinbox(-5000, 5000, " mm", self.base_y, self.on_transform_changed)
         self.spin_base_z = self._create_spinbox(-5000, 5000, " mm", self.base_z, self.on_transform_changed)
-        self.spin_base_a = self._create_spinbox(-360, 360, " °", self.base_a, self.on_transform_changed)
-        self.spin_base_b = self._create_spinbox(-360, 360, " °", self.base_b, self.on_transform_changed)
-        self.spin_base_c = self._create_spinbox(-360, 360, " °", self.base_c, self.on_transform_changed)
+        self.spin_base_a = self._create_spinbox(-360, 360, " Â°", self.base_a, self.on_transform_changed)
+        self.spin_base_b = self._create_spinbox(-360, 360, " Â°", self.base_b, self.on_transform_changed)
+        self.spin_base_c = self._create_spinbox(-360, 360, " Â°", self.base_c, self.on_transform_changed)
         for label, spin in [("X:", self.spin_base_x), ("Y:", self.spin_base_y), ("Z:", self.spin_base_z),
                             ("A:", self.spin_base_a), ("B:", self.spin_base_b), ("C:", self.spin_base_c)]:
             self.base_form.addRow(label, spin)
@@ -704,9 +798,9 @@ class RobotPathViewer(QMainWindow):
         self.spin_tool_x = self._create_spinbox(-5000, 5000, " mm", self.tool_x, self.on_transform_changed)
         self.spin_tool_y = self._create_spinbox(-5000, 5000, " mm", self.tool_y, self.on_transform_changed)
         self.spin_tool_z = self._create_spinbox(-5000, 5000, " mm", self.tool_z, self.on_transform_changed)
-        self.spin_tool_a = self._create_spinbox(-360, 360, " °", self.tool_a, self.on_transform_changed)
-        self.spin_tool_b = self._create_spinbox(-360, 360, " °", self.tool_b, self.on_transform_changed)
-        self.spin_tool_c = self._create_spinbox(-360, 360, " °", self.tool_c, self.on_transform_changed)
+        self.spin_tool_a = self._create_spinbox(-360, 360, " Â°", self.tool_a, self.on_transform_changed)
+        self.spin_tool_b = self._create_spinbox(-360, 360, " Â°", self.tool_b, self.on_transform_changed)
+        self.spin_tool_c = self._create_spinbox(-360, 360, " Â°", self.tool_c, self.on_transform_changed)
         for label, spin in [("X:", self.spin_tool_x), ("Y:", self.spin_tool_y), ("Z:", self.spin_tool_z),
                             ("A:", self.spin_tool_a), ("B:", self.spin_tool_b), ("C:", self.spin_tool_c)]:
             self.tool_form.addRow(label, spin)
@@ -1085,6 +1179,7 @@ class RobotPathViewer(QMainWindow):
         if getattr(self, "updating_sliders", False):
             return
         self.ik_config = text
+        self._force_ik_seed_from_config = True
         self.save_settings()
         if self.points_xyz is not None:
             self._request_update()
@@ -1201,8 +1296,8 @@ class RobotPathViewer(QMainWindow):
         """Auto-detect G-code format by scanning the first 200 lines.
 
         Returns:
-            'nc'    — if M3/M5 spindle commands or standalone S lines found
-            'prusa' — if E parameter in G1 lines or slicer comments found
+            'nc'    â€” if M3/M5 spindle commands or standalone S lines found
+            'prusa' â€” if E parameter in G1 lines or slicer comments found
         """
         has_m3_m5 = False
         has_standalone_s = False
@@ -1427,6 +1522,7 @@ class RobotPathViewer(QMainWindow):
         try:
             self.robot_sim.load_robot(file_path)
             self.last_urdf_path = file_path
+            self._reset_ik_tracking()
 
             for actor in self.robot_actors.values():
                 self.plotter.remove_actor(actor)
@@ -1480,7 +1576,7 @@ class RobotPathViewer(QMainWindow):
     def on_load_error(self, err_msg):
         """Handle CSV loading errors."""
         QMessageBox.critical(self, "Error Loading File", err_msg)
-        self.lbl_status.setText("Load error.")
+        self.lbl_status.setText("Load failed.")
 
     def on_load_finished(self, points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g):
         """Handle successful CSV load: store data and update UI."""
@@ -1522,6 +1618,11 @@ class RobotPathViewer(QMainWindow):
         self.updating_sliders = False
 
         self.current_step = num_pts
+        self.max_layer = max_layer
+        self.estimated_time_s = estimated_time_s
+        self.estimated_weight_g = estimated_weight_g
+        self._reset_ik_tracking()
+
         self.current_layer = max_layer
 
         self.update_ui_labels()
@@ -1615,12 +1716,12 @@ class RobotPathViewer(QMainWindow):
     # ------------------------------------------------------------------
 
     def _request_update(self):
-        """Request a debounced plot update — restarts the timer on each call."""
+        """Request a debounced plot update â€” restarts the timer on each call."""
         self._pending_tube_render = True
         self._render_timer.start()
 
     def _deferred_update_plot(self):
-        """Called by debounce timer — performs the actual rendering."""
+        """Called by debounce timer â€” performs the actual rendering."""
         if self._pending_tube_render:
             self._pending_tube_render = False
             self.update_plot()
@@ -1743,6 +1844,35 @@ class RobotPathViewer(QMainWindow):
                 
         return seed
 
+    def _get_ik_seed_candidates(self):
+        """Return IK seed candidates (selected config first, then alternatives)."""
+        if not self.robot_sim.urdf_model:
+            return []
+
+        candidates = []
+        seen = set()
+        ordered_names = [self.ik_config] + [k for k in IK_CONFIGS.keys() if k != self.ik_config]
+
+        for cfg_name in ordered_names:
+            angles = IK_CONFIGS.get(cfg_name, IK_CONFIGS["Default (Zero)"])
+            seed = np.zeros(len(self.robot_sim.ik_chain.links), dtype=np.float64)
+            angle_idx = 0
+            for i, link in enumerate(self.robot_sim.ik_chain.links):
+                if link.name in self.robot_sim.active_joints and angle_idx < len(angles):
+                    seed[i] = angles[angle_idx]
+                    angle_idx += 1
+            key = tuple(np.round(seed, 6))
+            if key not in seen:
+                seen.add(key)
+                candidates.append(seed)
+
+        return candidates
+
+    def _reset_ik_tracking(self, force_config_seed=False):
+        """Drop cached IK continuity state after a real context change."""
+        self.last_ik_solution = None
+        self._force_ik_seed_from_config = force_config_seed
+
     def _update_robot_ik(self, target_pt, target_ori):
         """Compute IK for the robot to follow the target point and update visuals."""
         if not self.robot_sim.urdf_model or not self.show_robot:
@@ -1766,16 +1896,41 @@ class RobotPathViewer(QMainWindow):
             target_pos = t_flange_target[0:3, 3] / 1000.0
             target_ori = t_flange_target[0:3, 0:3]
 
-            seed_position = self._get_ik_seed(target_pos=target_pos)
-            print(f"[IK DEBUG] Seed configuration: {self.ik_config}, Seed positions: {np.round(seed_position, 2)}")
-
+            if self.last_ik_solution is not None and not self._force_ik_seed_from_config:
+                seed_position = self.last_ik_solution
+            else:
+                seed_position = self._get_ik_seed(target_pos=target_pos)
+                
             ik_solution = self.robot_sim.calculate_ik(
                 target_pos,
                 target_orientation=target_ori,
                 initial_position=seed_position
             )
             if ik_solution is not None:
-                print(f"[IK DEBUG] Solution generated: {np.round(ik_solution, 2)}")
+                self.last_ik_solution = np.copy(ik_solution)
+                self._force_ik_seed_from_config = False
+                
+                # Update visual labels
+                act_j = []
+                for idx, link in enumerate(self.robot_sim.ik_chain.links):
+                    if link.name in self.robot_sim.active_joints and len(act_j) < 6:
+                        act_j.append(math.degrees(ik_solution[idx]))
+                if len(act_j) == 6:
+                    text_j123 = f"J1-3 deg: A1:{act_j[0]:.1f} A2:{act_j[1]:.1f} A3:{act_j[2]:.1f}"
+                    text_j456 = f"J4-6 deg: A4:{act_j[3]:.1f} A5:{act_j[4]:.1f} A6:{act_j[5]:.1f}"
+                    self.lbl_pose_j123.setText(text_j123)
+                    self.lbl_pose_j456.setText(text_j456)
+                    self.lbl_pose_j123.setToolTip(text_j123)
+                    self.lbl_pose_j456.setToolTip(text_j456)
+                
+                tcp_x, tcp_y, tcp_z, tcp_a, tcp_b, tcp_c = matrix_to_kuka_abc(t_tcp_target)
+                text_xyz = f"TCP mm: X:{tcp_x:.1f} Y:{tcp_y:.1f} Z:{tcp_z:.1f}"
+                text_abc = f"TCP deg: A:{tcp_a:.1f} B:{tcp_b:.1f} C:{tcp_c:.1f}"
+                self.lbl_pose_xyz.setText(text_xyz)
+                self.lbl_pose_abc.setText(text_abc)
+                self.lbl_pose_xyz.setToolTip(text_xyz)
+                self.lbl_pose_abc.setToolTip(text_abc)
+
                 limit_violations = self.robot_sim.check_limits(ik_solution)
                 singularities = self.robot_sim.check_singularities(ik_solution)
 
@@ -1812,10 +1967,12 @@ class RobotPathViewer(QMainWindow):
 
         base_params = (self.base_x, self.base_y, self.base_z, self.base_a, self.base_b, self.base_c)
         tool_params = (self.tool_x, self.tool_y, self.tool_z, self.tool_a, self.tool_b, self.tool_c)
-        seed_array = self._get_ik_seed()
+        seed_candidates = self._get_ik_seed_candidates()
+        seed_array = seed_candidates[0] if seed_candidates else self._get_ik_seed()
 
         self.traj_thread = TrajectoryTestThread(
-            self.points_xyz, self.orientations_abc, self.robot_sim, base_params, tool_params, seed_array
+            self.points_xyz, self.orientations_abc, self.robot_sim,
+            base_params, tool_params, seed_array, seed_candidates
         )
         self.traj_thread.progress_signal.connect(self.on_traj_test_progress)
         self.traj_thread.finished_signal.connect(self.on_traj_test_finished)
@@ -1962,7 +2119,9 @@ class RobotPathViewer(QMainWindow):
         finally:
             self.updating_sliders = False
             
-        # Vynucené překreslení vizuálních objektů, protože události byly potlačeny
+        self._reset_ik_tracking()
+            
+        # VynucenĂ© pĹ™ekreslenĂ­ vizuĂˇlnĂ­ch objektĹŻ, protoĹľe udĂˇlosti byly potlaÄŤeny
         self.draw_table()
         
         for actor in self.robot_actors.values():
@@ -2123,7 +2282,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     # ---------------------------------------------------------------------------
-    # Splash screen — shown IMMEDIATELY, before any heavy imports.
+    # Splash screen â€” shown IMMEDIATELY, before any heavy imports.
     #
     # pyvista (VTK) and robot_ik (ikpy/yourdfpy/trimesh) are slow to initialise
     # (~3-6 s combined). Deferring them here means the splash appears at once,
@@ -2153,7 +2312,7 @@ if __name__ == "__main__":
         app.processEvents()
 
     # ---------------------------------------------------------------------------
-    # Heavy imports — happen here while the splash is visible.
+    # Heavy imports â€” happen here while the splash is visible.
     # Assigning to module-level globals makes them available to all class methods.
     # ---------------------------------------------------------------------------
     import pyvista as _pv                           # noqa: E402
@@ -2187,3 +2346,4 @@ if __name__ == "__main__":
         QTimer.singleShot(_remaining, lambda: splash.finish(window))
 
     sys.exit(app.exec())
+
