@@ -1856,6 +1856,17 @@ class RobotPathViewer(QMainWindow):
             self.spin_tool_c.setValue(self.tool_c)
         finally:
             self.updating_sliders = False
+            
+        # Vynucené překreslení vizuálních objektů, protože události byly potlačeny
+        self.draw_table()
+        
+        for actor in self.robot_actors.values():
+            actor.SetVisibility(self.show_robot)
+            
+        if self.points_xyz is not None:
+            self._request_update()
+        else:
+            self.plotter.render()
 
     def save_settings(self):
         """Save current project (auto-save)."""
@@ -1966,6 +1977,10 @@ class RobotPathViewer(QMainWindow):
         # Reload robot if changed
         if self.last_urdf_path and os.path.exists(self.last_urdf_path):
             self.load_urdf(self.last_urdf_path)
+
+        # Reload CSV/NC file if present
+        if self.last_file_path and os.path.exists(self.last_file_path):
+            self.load_file(self.last_file_path)
 
         self.lbl_status.setText(f"Opened project '{self._project_name}'.")
 
