@@ -518,18 +518,7 @@ class RobotPathViewer(QMainWindow):
 
         self.layout_general.addSpacing(12)
 
-        # ---- ROBOT ------------------------------------------------------
-        self.layout_general.addWidget(QLabel("<b>ROBOT</b>"))
-
-        self.btn_load_urdf = QPushButton("Load URDF Robot...")
-        self.btn_load_urdf.clicked.connect(self.load_urdf_dialog)
-        self.layout_general.addWidget(self.btn_load_urdf)
-
-        self.btn_test_traj = QPushButton("Test Trajectory")
-        self.btn_test_traj.clicked.connect(self.run_trajectory_test)
-        self.btn_test_traj.setEnabled(False)
-        self.layout_general.addWidget(self.btn_test_traj)
-
+        # ---- STATUS -----------------------------------------------------
         self.lbl_status = QLabel("Ready.")
         self.lbl_status.setWordWrap(True)
         self.layout_general.addWidget(self.lbl_status)
@@ -596,6 +585,17 @@ class RobotPathViewer(QMainWindow):
 
         # Robot section
         self.layout_workplace.addWidget(QLabel("<b>ROBOT</b>"))
+
+        self.btn_load_urdf = QPushButton("Load URDF Robot...")
+        self.btn_load_urdf.clicked.connect(self.load_urdf_dialog)
+        self.layout_workplace.addWidget(self.btn_load_urdf)
+
+        self.btn_test_traj = QPushButton("Test Trajectory")
+        self.btn_test_traj.clicked.connect(self.run_trajectory_test)
+        self.btn_test_traj.setEnabled(False)
+        self.layout_workplace.addWidget(self.btn_test_traj)
+
+        self.layout_workplace.addSpacing(10)
 
         self.check_show_robot = QCheckBox("Show Robot")
         self.check_show_robot.setChecked(self.show_robot)
