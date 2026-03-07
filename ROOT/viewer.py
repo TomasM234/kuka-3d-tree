@@ -4,7 +4,6 @@ import subprocess
 import sys
 import multiprocessing
 import math
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 # pyvista and pyvistaqt are imported lazily in __main__ (after splash is visible)
 # because they take several seconds to load (VTK initialization).
@@ -17,50 +16,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QTimer, QProcess
 from PyQt6.QtGui import QPainter, QColor
+from pose_math import kuka_base_to_matrix, matrix_to_kuka_abc
+from trajectory_test_lib import TrajectoryTestConfig, run_trajectory_test_parallel
 
 # robot_ik (ikpy / yourdfpy / trimesh) is also imported lazily in __main__.
 RobotSimulator = None
-
-
-# ---------------------------------------------------------------------------
-# Shared utility: KUKA ZYX Euler â†’ 4Ă—4 homogeneous matrix
-# ---------------------------------------------------------------------------
-def kuka_base_to_matrix(x, y, z, a, b, c):
-    """Convert KUKA BASE/TOOL parameters (X,Y,Z,A,B,C) to a 4Ă—4 homogeneous
-    transformation matrix using ZYX (A-B-C) Euler convention."""
-    an = np.radians(a)
-    bn = np.radians(b)
-    cn = np.radians(c)
-    cz, sz = np.cos(an), np.sin(an)
-    cy, sy = np.cos(bn), np.sin(bn)
-    cx, sx = np.cos(cn), np.sin(cn)
-    Rz = np.array([[cz, -sz, 0, 0], [sz, cz, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
-    Ry = np.array([[cy, 0, sy, 0], [0, 1, 0, 0], [-sy, 0, cy, 0], [0, 0, 0, 1]])
-    Rx = np.array([[1, 0, 0, 0], [0, cx, -sx, 0], [0, sx, cx, 0], [0, 0, 0, 1]])
-    R = Rz @ Ry @ Rx
-    R[0, 3] = x
-    R[1, 3] = y
-    R[2, 3] = z
-    return R
-
-def matrix_to_kuka_abc(matrix):
-    """Convert a 4x4 homogeneous transformation matrix to KUKA BASE/TOOL 
-    parameters (X,Y,Z,A,B,C) using ZYX Euler convention."""
-    x = matrix[0, 3]
-    y = matrix[1, 3]
-    z = matrix[2, 3]
-    
-    sy = math.sqrt(matrix[0,0]**2 + matrix[1,0]**2)
-    singular = sy < 1e-6
-    if not singular:
-        a = math.atan2(matrix[1,0], matrix[0,0])
-        b = math.atan2(-matrix[2,0], sy)
-        c = math.atan2(matrix[2,1], matrix[2,2])
-    else:
-        a = math.atan2(-matrix[1,2], matrix[1,1])
-        b = math.atan2(-matrix[2,0], sy)
-        c = 0
-    return x, y, z, math.degrees(a), math.degrees(b), math.degrees(c)
 
 
 # ---------------------------------------------------------------------------
@@ -131,141 +91,13 @@ class ColorStripWidget(QWidget):
                     start_idx = i
 
 
-# ---------------------------------------------------------------------------
-# Multiprocessing worker for trajectory testing
-# ---------------------------------------------------------------------------
-def _trajectory_worker(urdf_path, points_chunk, oris_chunk, base_params, tool_params, seed_array, seed_candidates):
-    """Process a chunk of trajectory points in a separate process.
-
-    Each chunk runs sequentially with IK seeding: the solution for point N
-    is used as the initial guess for point N+1.
-
-    At chunk start, multiple seed candidates are tried and the best solution
-    is selected. This reduces false "limit" hits caused by selecting a poor
-    IK branch at chunk boundaries.
-
-    Returns:
-        numpy array of int8 statuses for this chunk.
-    """
-    from robot_ik import RobotSimulator
-
-    sim = RobotSimulator()
-    sim.load_robot(urdf_path)
-
-    b_x, b_y, b_z, b_a, b_b, b_c = base_params
-    t_x, t_y, t_z, t_a, t_b, t_c = tool_params
-
-    t_base = kuka_base_to_matrix(b_x, b_y, b_z, b_a, b_b, b_c)
-    t_tool = kuka_base_to_matrix(t_x, t_y, t_z, t_a, t_b, t_c)
-    t_tool_inv = np.linalg.inv(t_tool)
-
-    n = len(points_chunk)
-    statuses = np.zeros(n, dtype=np.int8)
-    if n == 0:
-        return statuses
-
-    def _classify(solution):
-        if solution is None:
-            return 3  # Unreachable
-        if len(sim.check_limits(solution)) > 0:
-            return 2  # Limit
-        if len(sim.check_singularities(solution)) > 0:
-            return 1  # Singularity
-        return 0  # OK
-
-    def _dynamicize_seed(seed_template, target_pos_m):
-        """Adjust A1 seed based on target azimuth while preserving front/back."""
-        dyn = np.array(seed_template, dtype=np.float64, copy=True)
-        base_azimuth = math.atan2(target_pos_m[1], target_pos_m[0])
-        is_back = False
-        for j, link in enumerate(sim.ik_chain.links):
-            if link.name in sim.active_joints:
-                if dyn[j] > 1.0:
-                    is_back = True
-                dyn[j] = base_azimuth + (math.pi if is_back else 0.0)
-                break
-        return dyn
-
-    # Resolve first target of this chunk
-    first_pt = points_chunk[0]
-    first_ori = oris_chunk[0]
-    t_point_first = kuka_base_to_matrix(
-        first_pt[0], first_pt[1], first_pt[2],
-        first_ori[0], first_ori[1], first_ori[2]
-    )
-    t_flange_first = (t_base @ t_point_first) @ t_tool_inv
-    first_target_pos = t_flange_first[0:3, 3] / 1000.0
-    first_target_ori = t_flange_first[0:3, 0:3]
-
-    # Build chunk-start candidates: selected config first, then alternates
-    candidate_templates = [seed_array]
-    if seed_candidates:
-        candidate_templates.extend(seed_candidates)
-
-    best_seed = _dynamicize_seed(candidate_templates[0], first_target_pos)
-    best_solution = sim.calculate_ik(
-        first_target_pos,
-        target_orientation=first_target_ori,
-        initial_position=best_seed
-    )
-    best_status = _classify(best_solution)
-
-    for template in candidate_templates[1:]:
-        candidate_seed = _dynamicize_seed(template, first_target_pos)
-        candidate_solution = sim.calculate_ik(
-            first_target_pos,
-            target_orientation=first_target_ori,
-            initial_position=candidate_seed
-        )
-        candidate_status = _classify(candidate_solution)
-        if candidate_status < best_status:
-            best_status = candidate_status
-            best_solution = candidate_solution
-            best_seed = candidate_seed
-            if best_status == 0:
-                break
-
-    statuses[0] = best_status
-    prev_solution = best_solution if best_solution is not None else best_seed
-
-    # Continue sequentially inside chunk
-    for i in range(1, n):
-        pt = points_chunk[i]
-        ori = oris_chunk[i]
-        t_point = kuka_base_to_matrix(pt[0], pt[1], pt[2], ori[0], ori[1], ori[2])
-        t_flange_target = (t_base @ t_point) @ t_tool_inv
-
-        target_pos = t_flange_target[0:3, 3] / 1000.0
-        target_ori = t_flange_target[0:3, 0:3]
-
-        ik_solution = sim.calculate_ik(
-            target_pos,
-            target_orientation=target_ori,
-            initial_position=prev_solution
-        )
-        status = _classify(ik_solution)
-        statuses[i] = status
-
-        if ik_solution is not None:
-            prev_solution = ik_solution
-
-    return statuses
-
-
 class TrajectoryTestThread(QThread):
-    """Background thread that splits trajectory across CPU cores for parallel IK testing.
-
-    Optimizations over the naive approach:
-    1. IK seeding â€” each point uses the previous solution as the optimizer start,
-       reducing convergence time by 5â€“10Ă—.
-    2. Multiprocessing â€” trajectory is divided into chunks processed in parallel,
-       giving an additional NĂ— speedup where N = number of CPU cores.
-    """
+    """Background thread that runs trajectory testing via trajectory_test_lib."""
 
     progress_signal = pyqtSignal(int, int)   # current, total
     finished_signal = pyqtSignal(object)     # numpy array of statuses
 
-    def __init__(self, points_xyz, orientations_abc, robot_sim, base_params, tool_params, seed_array, seed_candidates):
+    def __init__(self, points_xyz, orientations_abc, robot_sim, base_params, tool_params, seed_templates):
         super().__init__()
         self.points_xyz = points_xyz
         self.orientations_abc = orientations_abc
@@ -273,52 +105,26 @@ class TrajectoryTestThread(QThread):
         self.has_model = robot_sim.urdf_model is not None
         self.base_params = base_params
         self.tool_params = tool_params
-        self.seed_array = seed_array
-        self.seed_candidates = seed_candidates
+        self.seed_templates = tuple(np.array(seed, dtype=np.float64, copy=True) for seed in seed_templates)
 
     def run(self):
         if not self.has_model:
             self.finished_signal.emit(None)
             return
 
-        total = len(self.points_xyz)
-        num_workers = max(1, min(multiprocessing.cpu_count(), 8))
-        chunk_size = max(100, total // num_workers)
-
-        # Split the points array into chunks for parallel processing
-        chunks = []
-        for start in range(0, total, chunk_size):
-            end = min(start + chunk_size, total)
-            chunks.append((start, self.points_xyz[start:end], self.orientations_abc[start:end]))
-
-        self.progress_signal.emit(0, total)
-
-        statuses = np.zeros(total, dtype=np.int8)
-        completed = 0
-
         try:
-            with ProcessPoolExecutor(max_workers=num_workers) as pool:
-                futures = {}
-                for start, chunk_pts, chunk_oris in chunks:
-                    future = pool.submit(
-                        _trajectory_worker,
-                        self.urdf_path,
-                        chunk_pts,
-                        chunk_oris,
-                        self.base_params,
-                        self.tool_params,
-                        self.seed_array,
-                        self.seed_candidates
-                    )
-                    futures[future] = (start, len(chunk_pts))
-
-                for future in as_completed(futures):
-                    start, length = futures[future]
-                    chunk_result = future.result()
-                    statuses[start:start + length] = chunk_result
-                    completed += length
-                    self.progress_signal.emit(completed, total)
-
+            config = TrajectoryTestConfig(
+                urdf_path=self.urdf_path,
+                base_params=self.base_params,
+                tool_params=self.tool_params,
+                seed_templates=self.seed_templates
+            )
+            statuses = run_trajectory_test_parallel(
+                self.points_xyz,
+                self.orientations_abc,
+                config,
+                progress_callback=lambda current, total: self.progress_signal.emit(current, total)
+            )
         except Exception as e:
             print(f"Trajectory test error: {e}")
             self.finished_signal.emit(None)
@@ -1824,24 +1630,9 @@ class RobotPathViewer(QMainWindow):
             return None
             
         angles = IK_CONFIGS.get(self.ik_config, IK_CONFIGS["Default (Zero)"])
-        seed = np.zeros(len(self.robot_sim.ik_chain.links))
-        
-        # Calculate dynamic azimuth towards the target point if provided
-        base_azimuth = 0.0
-        if target_pos is not None:
-            base_azimuth = math.atan2(target_pos[1], target_pos[0])
-        
-        # Match configured angles to active joints
-        angle_idx = 0
-        for i, link in enumerate(self.robot_sim.ik_chain.links):
-            if link.name in self.robot_sim.active_joints and angle_idx < len(angles):
-                if angle_idx == 0 and target_pos is not None:
-                    # Dynamically override A1 based on real target direction
-                    seed[i] = base_azimuth + (math.pi if "Back" in self.ik_config else 0.0)
-                else:
-                    seed[i] = angles[angle_idx]
-                angle_idx += 1
-                
+        seed = self.robot_sim.build_seed_from_active_angles(angles)
+        if target_pos is not None and seed is not None:
+            seed = self.robot_sim.apply_base_azimuth_to_seed(seed, target_pos)
         return seed
 
     def _get_ik_seed_candidates(self):
@@ -1855,12 +1646,9 @@ class RobotPathViewer(QMainWindow):
 
         for cfg_name in ordered_names:
             angles = IK_CONFIGS.get(cfg_name, IK_CONFIGS["Default (Zero)"])
-            seed = np.zeros(len(self.robot_sim.ik_chain.links), dtype=np.float64)
-            angle_idx = 0
-            for i, link in enumerate(self.robot_sim.ik_chain.links):
-                if link.name in self.robot_sim.active_joints and angle_idx < len(angles):
-                    seed[i] = angles[angle_idx]
-                    angle_idx += 1
+            seed = self.robot_sim.build_seed_from_active_angles(angles)
+            if seed is None:
+                continue
             key = tuple(np.round(seed, 6))
             if key not in seen:
                 seen.add(key)
@@ -1931,8 +1719,9 @@ class RobotPathViewer(QMainWindow):
                 self.lbl_pose_xyz.setToolTip(text_xyz)
                 self.lbl_pose_abc.setToolTip(text_abc)
 
-                limit_violations = self.robot_sim.check_limits(ik_solution)
-                singularities = self.robot_sim.check_singularities(ik_solution)
+                evaluation = self.robot_sim.evaluate_solution(ik_solution)
+                limit_violations = evaluation.limit_violations
+                singularities = evaluation.singularities
 
                 transforms = self.robot_sim.get_forward_transforms(ik_solution)
                 for link_name, t_matrix in transforms.items():
@@ -1968,11 +1757,14 @@ class RobotPathViewer(QMainWindow):
         base_params = (self.base_x, self.base_y, self.base_z, self.base_a, self.base_b, self.base_c)
         tool_params = (self.tool_x, self.tool_y, self.tool_z, self.tool_a, self.tool_b, self.tool_c)
         seed_candidates = self._get_ik_seed_candidates()
-        seed_array = seed_candidates[0] if seed_candidates else self._get_ik_seed()
+        if not seed_candidates:
+            fallback_seed = self._get_ik_seed()
+            if fallback_seed is not None:
+                seed_candidates = [fallback_seed]
 
         self.traj_thread = TrajectoryTestThread(
             self.points_xyz, self.orientations_abc, self.robot_sim,
-            base_params, tool_params, seed_array, seed_candidates
+            base_params, tool_params, seed_candidates
         )
         self.traj_thread.progress_signal.connect(self.on_traj_test_progress)
         self.traj_thread.finished_signal.connect(self.on_traj_test_finished)

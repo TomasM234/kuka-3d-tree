@@ -1,5 +1,7 @@
 import os
 import numpy as np
+from dataclasses import dataclass
+from enum import IntEnum
 
 try:
     from ikpy.chain import Chain
@@ -9,6 +11,24 @@ try:
 except ImportError:
     Chain = None
     yourdfpy = None
+    trimesh = None
+    pv = None
+
+
+class IKSolutionStatus(IntEnum):
+    """Unified IK status codes shared by visualization and trajectory tests."""
+    OK = 0
+    SINGULARITY = 1
+    LIMIT = 2
+    UNREACHABLE = 3
+
+
+@dataclass(frozen=True)
+class IKEvaluation:
+    """Result of evaluating an IK solution against limits/singularity checks."""
+    status: IKSolutionStatus
+    limit_violations: list
+    singularities: list
 
 class RobotSimulator:
     """Handles robot URDF loading, IK/FK computation, and mesh caching for 3D visualization."""
@@ -111,6 +131,103 @@ class RobotSimulator:
                 pv_mesh.points *= 1000.0
                 self.link_meshes[link.name] = pv_mesh
 
+    def build_seed_from_active_angles(self, active_joint_angles):
+        """Map active-joint angles to the full IK chain array."""
+        if self.ik_chain is None:
+            return None
+
+        seed = np.zeros(len(self.ik_chain.links), dtype=np.float64)
+        angle_idx = 0
+        for i, link in enumerate(self.ik_chain.links):
+            if link.name in self.active_joints and angle_idx < len(active_joint_angles):
+                seed[i] = active_joint_angles[angle_idx]
+                angle_idx += 1
+        return seed
+
+    def apply_base_azimuth_to_seed(self, seed_template, target_position_m):
+        """Adjust A1 seed toward target azimuth while preserving front/back branch."""
+        if self.ik_chain is None:
+            return np.array(seed_template, dtype=np.float64, copy=True)
+
+        dyn = np.array(seed_template, dtype=np.float64, copy=True)
+        base_azimuth = np.arctan2(target_position_m[1], target_position_m[0])
+        is_back = False
+
+        for i, link in enumerate(self.ik_chain.links):
+            if link.name in self.active_joints:
+                if dyn[i] > 1.0:
+                    is_back = True
+                dyn[i] = base_azimuth + (np.pi if is_back else 0.0)
+                break
+
+        return dyn
+
+    @staticmethod
+    def _distance_to_interval(value, lower, upper):
+        if value < lower:
+            return lower - value
+        if value > upper:
+            return value - upper
+        return 0.0
+
+    def _wrap_joint_value(self, value, lower, upper, reference=None):
+        """Pick best 2*pi-equivalent value: in-limit if possible, else closest to limits."""
+        candidates = [value + 2.0 * np.pi * k for k in range(-3, 4)]
+        in_limit = [c for c in candidates if lower <= c <= upper]
+
+        if in_limit:
+            if reference is not None:
+                return min(in_limit, key=lambda c: abs(c - reference))
+            return min(in_limit, key=lambda c: abs(c - value))
+
+        if reference is not None:
+            return min(candidates, key=lambda c: (self._distance_to_interval(c, lower, upper), abs(c - reference)))
+        return min(candidates, key=lambda c: self._distance_to_interval(c, lower, upper))
+
+    def normalize_solution_to_limits(self, joint_angles, reference=None):
+        """Normalize each active joint by 2*pi wrapping toward URDF limits."""
+        if joint_angles is None:
+            return None
+        if self.urdf_model is None or self.ik_chain is None:
+            return joint_angles
+
+        normalized = np.array(joint_angles, dtype=np.float64, copy=True)
+        reference_arr = None if reference is None else np.asarray(reference, dtype=np.float64)
+
+        for i, link in enumerate(self.ik_chain.links):
+            if link.name not in self.active_joints:
+                continue
+            j = self._joint_map.get(link.name)
+            if not j or j.limit is None:
+                continue
+
+            lower = j.limit.lower if j.limit.lower is not None else -float('inf')
+            upper = j.limit.upper if j.limit.upper is not None else float('inf')
+            ref_val = None
+            if reference_arr is not None and i < len(reference_arr):
+                ref_val = reference_arr[i]
+
+            normalized[i] = self._wrap_joint_value(normalized[i], lower, upper, ref_val)
+
+        return normalized
+
+    def evaluate_solution(self, joint_angles, singularity_threshold_deg=1.0):
+        """Evaluate a solution and return unified status + detail lists."""
+        if joint_angles is None:
+            return IKEvaluation(IKSolutionStatus.UNREACHABLE, [], [])
+
+        limit_violations = self.check_limits(joint_angles)
+        singularities = self.check_singularities(joint_angles, threshold_deg=singularity_threshold_deg)
+
+        if limit_violations:
+            status = IKSolutionStatus.LIMIT
+        elif singularities:
+            status = IKSolutionStatus.SINGULARITY
+        else:
+            status = IKSolutionStatus.OK
+
+        return IKEvaluation(status, limit_violations, singularities)
+
 
     def calculate_ik(self, target_position, target_orientation=None, initial_position=None):
         """Calculate Inverse Kinematics for a given XYZ target (in meters).
@@ -139,34 +256,10 @@ class RobotSimulator:
             ik_solution = self.ik_chain.inverse_kinematics(
                 target_position, **kwargs)
 
-        if ik_solution is not None and self.urdf_model is not None:
-            # Normalize angles to fit joint limits (handles e.g. 242 deg -> -118 deg)
-            for i, link in enumerate(self.ik_chain.links):
-                if link.name in self.active_joints:
-                    j = self._joint_map.get(link.name)
-                    if j and j.limit is not None:
-                        lower = j.limit.lower if j.limit.lower is not None else -float('inf')
-                        upper = j.limit.upper if j.limit.upper is not None else float('inf')
-                        val = ik_solution[i]
-                        
-                        # Only normalize if we are currently outside limits
-                        if val < lower or val > upper:
-                            # Try adding/subtracting 2*pi
-                            val_wrapped = val
-                            while val_wrapped > upper and (val_wrapped - 2 * np.pi) >= lower:
-                                val_wrapped -= 2 * np.pi
-                            while val_wrapped < lower and (val_wrapped + 2 * np.pi) <= upper:
-                                val_wrapped += 2 * np.pi
-                                
-                            # If still outside, pick the closest 2*pi wrapped representation
-                            if val_wrapped > upper and abs((val_wrapped - 2 * np.pi) - upper) < abs(val_wrapped - upper):
-                                val_wrapped -= 2 * np.pi
-                            elif val_wrapped < lower and abs((val_wrapped + 2 * np.pi) - lower) < abs(val_wrapped - lower):
-                                val_wrapped += 2 * np.pi
-                                
-                            ik_solution[i] = val_wrapped
+        if ik_solution is None:
+            return None
 
-        return ik_solution
+        return self.normalize_solution_to_limits(ik_solution, reference=initial_position)
         
     def get_forward_transforms(self, joint_angles):
         """
