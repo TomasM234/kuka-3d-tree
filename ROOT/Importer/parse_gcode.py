@@ -131,7 +131,7 @@ def run_import(input_path: str, output_csv: str) -> None:
     row_count = 0
 
     try:
-        with open(input_path, 'r', encoding='utf-8') as fin, \
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as fin, \
              open(output_csv, 'w', encoding='utf-8') as fout:
 
             fout.write("# Universal Data Stream | Created by: PrusaSlicer G-code Importer\n")
@@ -143,9 +143,10 @@ def run_import(input_path: str, output_csv: str) -> None:
                     continue
 
                 if line.startswith('G92'):
-                    if 'E0' in line:
-                        state['E'] = 0.0
-                        state['previous_E'] = 0.0
+                    m = re.search(r'\bE(-?\d+(?:\.\d+)?)', line)
+                    if m:
+                        state['E'] = float(m.group(1))
+                        state['previous_E'] = state['E']
 
                 elif line.startswith('M104') or line.startswith('M109'):
                     m = re.search(r'S(\d+)', line)

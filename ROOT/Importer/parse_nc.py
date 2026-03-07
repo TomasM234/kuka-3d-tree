@@ -104,6 +104,11 @@ def get_material_factor() -> float:
     return 1.0
 
 
+RE_CMD_M3 = re.compile(r'^M3(?:\s|$)')
+RE_CMD_M5 = re.compile(r'^M5(?:\s|$)')
+RE_STANDALONE_S = re.compile(r'^S([\d.]+)\s*$')
+
+
 # ---------------------------------------------------------------------------
 # Plugin interface — detection and conversion
 # ---------------------------------------------------------------------------
@@ -119,11 +124,11 @@ def can_handle(file_path: str) -> bool:
                 if i >= 200:
                     break
                 s = line.strip()
-                if s.startswith('M3') and (len(s) == 2 or not s[2].isdigit()):
+                if RE_CMD_M3.match(s):
                     return True
-                if s == 'M5' or s.startswith('M5 '):
+                if RE_CMD_M5.match(s):
                     return True
-                if re.match(r'^S[\d.]+\s*$', s):
+                if RE_STANDALONE_S.match(s):
                     return True
     except Exception:
         pass
@@ -141,7 +146,7 @@ def run_import(input_path: str, output_csv: str) -> None:
     layer_height = ""
     deposition_width = ""
     try:
-        with open(input_path, 'r', encoding='utf-8') as f:
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 line = line.strip()
                 if not line.startswith(';'):
@@ -175,22 +180,21 @@ def run_import(input_path: str, output_csv: str) -> None:
     rows = []
 
     try:
-        with open(input_path, 'r', encoding='utf-8') as fin:
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as fin:
             for line in fin:
                 line = line.strip()
                 if not line or line.startswith(';'):
                     continue
 
-                if line.startswith('M3'):
+                if RE_CMD_M3.match(line):
                     state['extruder_on'] = True
                     continue
-                if line.startswith('M5'):
+                if RE_CMD_M5.match(line):
                     state['extruder_on'] = False
                     continue
-                if re.match(r'^S[\d.]+', line):
-                    m = re.match(r'^S([\d.]+)', line)
-                    if m:
-                        state['S_value'] = float(m.group(1))
+                m = RE_STANDALONE_S.match(line)
+                if m:
+                    state['S_value'] = float(m.group(1))
                     continue
                 if line.startswith('M104') or line.startswith('M109'):
                     m = re.search(r'S(\d+)', line)
@@ -223,8 +227,11 @@ def run_import(input_path: str, output_csv: str) -> None:
 
     # --- Post-process: fill in progress percentages ---
     total = len(rows)
-    rows = [f"{r.rsplit(';', 1)[0]};{int(i * 100 / total)}"
-            for i, r in enumerate(rows)]
+    if total == 1:
+        rows = [f"{rows[0].rsplit(';', 1)[0]};100"]
+    else:
+        rows = [f"{r.rsplit(';', 1)[0]};{int(round(i * 100 / (total - 1)))}"
+                for i, r in enumerate(rows)]
 
     # --- Write output ---
     src_name = os.path.basename(input_path)
@@ -255,6 +262,7 @@ def _parse_move(line: str, state: dict, factor: float):
     cmd = parts[0]
 
     old_x, old_y, old_z = state['X'], state['Y'], state['Z']
+    old_a, old_b, old_c = state['A'], state['B'], state['C']
 
     for param in parts[1:]:
         key = param[0]
@@ -278,13 +286,23 @@ def _parse_move(line: str, state: dict, factor: float):
             state['F_Speed'] = val
         # W intentionally ignored
 
-    dist = math.sqrt((state['X'] - old_x) ** 2
-                     + (state['Y'] - old_y) ** 2
-                     + (state['Z'] - old_z) ** 2)
-    if dist < 0.001:
+    linear_dist = math.sqrt((state['X'] - old_x) ** 2
+                            + (state['Y'] - old_y) ** 2
+                            + (state['Z'] - old_z) ** 2)
+    orientation_delta = max(
+        abs(state['A'] - old_a),
+        abs(state['B'] - old_b),
+        abs(state['C'] - old_c)
+    )
+    has_linear_motion = linear_dist >= 0.001
+    has_orientation_motion = orientation_delta >= 0.001
+    if not has_linear_motion and not has_orientation_motion:
         return None  # no real movement
 
     if cmd == 'G0':
+        action = 'T'
+    elif not has_linear_motion:
+        # Pure orientation changes do not map to a meaningful g/m deposition value.
         action = 'T'
     elif cmd == 'G1' and state['extruder_on']:
         action = 'P'
@@ -292,9 +310,12 @@ def _parse_move(line: str, state: dict, factor: float):
         action = 'T'
 
     # Layer detection: Z change on print moves
-    if action == 'P' and abs(state['Z'] - state['last_print_z']) > 0.01:
-        state['LayerIndex'] += 1
-        state['last_print_z'] = state['Z']
+    if action == 'P':
+        if state['last_print_z'] == -999.0:
+            state['last_print_z'] = state['Z']
+        elif abs(state['Z'] - state['last_print_z']) > 0.01:
+            state['LayerIndex'] += 1
+            state['last_print_z'] = state['Z']
 
     tcp_speed = state['F_Speed'] / 60.0  # mm/s
 

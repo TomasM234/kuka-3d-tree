@@ -40,7 +40,6 @@ class RobotSimulator:
         self.link_meshes = {}       # link_name -> pv.PolyData
         self.active_joints = []     # list of active joint names
         self._joint_map = {}        # joint_name -> Joint object (O(1) lookup)
-        self.base_elements = []
 
     def is_available(self):
         """Return True if ikpy and yourdfpy are installed."""

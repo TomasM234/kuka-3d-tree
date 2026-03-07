@@ -17,6 +17,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QTimer, QProcess
 from PyQt6.QtGui import QPainter, QColor
 from pose_math import kuka_base_to_matrix, matrix_to_kuka_abc
 from project_config import DEFAULT_IK_CONFIG, ProjectConfig, ProjectConfigStore
+from trajectory_utils import apply_planar_edit_transform
 from trajectory_test_lib import TrajectoryTestConfig, run_trajectory_test_parallel
 
 # robot_ik (ikpy / yourdfpy / trimesh) is also imported lazily in __main__.
@@ -294,13 +295,18 @@ class RobotPathViewer(QMainWindow):
         # Data state
         self.points_xyz = None
         self._original_points_xyz = None
+        self._original_orientations_abc = None
         self.orientations_abc = None
         self.colors_rgb = None
         self.layer_end_indices = {}
         self._sorted_layer_ends = []  # [(layer_idx, end_point), ...] sorted by end_point
+        self._print_segment_indices = np.zeros(0, dtype=np.int32)
+        self._travel_segment_indices = np.zeros(0, dtype=np.int32)
         self.max_layer = 0
         self.current_step = 0
         self.current_layer = 0
+        self.estimated_time_s = 0.0
+        self.estimated_weight_g = 0.0
         self._apply_project_config_to_state(default_project)
 
         # Table state
@@ -320,6 +326,11 @@ class RobotPathViewer(QMainWindow):
         self.tool_actor = None
 
         self.updating_sliders = False
+        self._active_jobs = set()
+        self._load_request_id = 0
+        self._import_request_id = 0
+        self._traj_request_id = 0
+        self._postprocess_request_id = 0
         
         # IK state: keep the previous solution for continuity and only
         # re-apply the selected preset when the user explicitly changes it.
@@ -390,6 +401,104 @@ class RobotPathViewer(QMainWindow):
         self.pose_grid.addWidget(self.lbl_pose_j456)
         
         self.left_layout.addLayout(self.pose_grid)
+
+    def _begin_job(self, name, status_text):
+        """Lock interactive controls while an async job is in flight."""
+        self._active_jobs.add(name)
+        self.left_panel.setEnabled(False)
+        self.h_slider.setEnabled(False)
+        self.v_slider.setEnabled(False)
+        self.lbl_status.setText(status_text)
+
+    def _end_job(self, name):
+        """Release the async job lock and restore control enablement."""
+        self._active_jobs.discard(name)
+        if not self._active_jobs:
+            self._restore_interaction_state()
+
+    def _restore_interaction_state(self):
+        """Restore control enablement based on loaded data and current busy state."""
+        busy = bool(self._active_jobs)
+        self.left_panel.setEnabled(not busy)
+        self.h_slider.setEnabled(not busy and self.points_xyz is not None and len(self.points_xyz) > 0)
+        self.v_slider.setEnabled(not busy and self.points_xyz is not None and len(self.points_xyz) > 0)
+        self.btn_test_traj.setEnabled(
+            not busy and
+            self.points_xyz is not None and len(self.points_xyz) > 0 and
+            self.robot_sim.urdf_model is not None
+        )
+
+    def _reset_pose_labels(self):
+        """Reset the live pose labels when no robot/trajectory is active."""
+        defaults = [
+            (self.lbl_pose_xyz, "TCP mm: X:- Y:- Z:-"),
+            (self.lbl_pose_abc, "TCP deg: A:- B:- C:-"),
+            (self.lbl_pose_j123, "J1-3 deg: A1:- A2:- A3:-"),
+            (self.lbl_pose_j456, "J4-6 deg: A4:- A5:- A6:-"),
+        ]
+        for label, text in defaults:
+            label.setText(text)
+            label.setToolTip(text)
+
+    def _clear_path_actors(self):
+        """Remove rendered trajectory actors from the scene."""
+        for attr in ("path_actor_print", "path_actor_travel", "tool_actor"):
+            actor = getattr(self, attr, None)
+            if actor:
+                self.plotter.remove_actor(actor)
+                setattr(self, attr, None)
+
+    def _clear_trajectory_state(self):
+        """Drop loaded trajectory data and reset related UI state."""
+        self.points_xyz = None
+        self._original_points_xyz = None
+        self._original_orientations_abc = None
+        self.orientations_abc = None
+        self.colors_rgb = None
+        self.layer_end_indices = {}
+        self._sorted_layer_ends = []
+        self._print_segment_indices = np.zeros(0, dtype=np.int32)
+        self._travel_segment_indices = np.zeros(0, dtype=np.int32)
+        self.max_layer = 0
+        self.current_step = 0
+        self.current_layer = 0
+        self.estimated_time_s = 0.0
+        self.estimated_weight_g = 0.0
+        self._clear_path_actors()
+        self.color_strip.set_statuses(None)
+        self.lbl_print_time.setText("")
+        self.lbl_print_weight.setText("")
+        self.lbl_edit_status.setText("")
+        self.spin_edit_x.setValue(0.0)
+        self.spin_edit_y.setValue(0.0)
+        self.spin_edit_z_rot.setValue(0.0)
+        self.h_slider.setValue(0)
+        self.h_slider.setEnabled(False)
+        self.v_slider.setValue(0)
+        self.v_slider.setEnabled(False)
+        self.update_ui_labels()
+        self._reset_ik_tracking()
+
+    def _clear_robot_state(self):
+        """Drop loaded robot data and reset related UI state."""
+        for actor in self.robot_actors.values():
+            self.plotter.remove_actor(actor)
+        self.robot_actors.clear()
+        self.robot_sim = RobotSimulator()
+        self.lbl_robot_name.setText("No robot selected.")
+        self._reset_pose_labels()
+        self._reset_ik_tracking()
+
+    def _rebuild_segment_index_cache(self):
+        """Pre-compute print/travel segment indices for faster scrubbing."""
+        if self.colors_rgb is None or len(self.colors_rgb) == 0:
+            self._print_segment_indices = np.zeros(0, dtype=np.int32)
+            self._travel_segment_indices = np.zeros(0, dtype=np.int32)
+            return
+
+        is_print_move = np.all(self.colors_rgb == COLOR_PRINT, axis=1)
+        self._print_segment_indices = np.flatnonzero(is_print_move).astype(np.int32)
+        self._travel_segment_indices = np.flatnonzero(~is_print_move).astype(np.int32)
 
     def _create_spinbox(self, min_val, max_val, suffix, value, callback):
         """Helper to create a configured QDoubleSpinBox and connect its signal."""
@@ -677,25 +786,17 @@ class RobotPathViewer(QMainWindow):
         dy = self.spin_edit_y.value()
         angle_deg = self.spin_edit_z_rot.value()
 
-        # Start from a fresh copy of the original data
-        pts = self._original_points_xyz.copy()
-
-        # Rotate around the centroid of the ORIGINAL data
-        if angle_deg != 0.0:
-            cx = np.mean(pts[:, 0])
-            cy = np.mean(pts[:, 1])
-            rad = np.radians(angle_deg)
-            cos_a, sin_a = np.cos(rad), np.sin(rad)
-            rel_x = pts[:, 0] - cx
-            rel_y = pts[:, 1] - cy
-            pts[:, 0] = cos_a * rel_x - sin_a * rel_y + cx
-            pts[:, 1] = sin_a * rel_x + cos_a * rel_y + cy
-
-        # Translate
-        pts[:, 0] += dx
-        pts[:, 1] += dy
+        pts, oris = apply_planar_edit_transform(
+            self._original_points_xyz,
+            self._original_orientations_abc,
+            dx,
+            dy,
+            angle_deg
+        )
 
         self.points_xyz = pts
+        if oris is not None:
+            self.orientations_abc = oris
 
         self.lbl_edit_status.setText(
             f"X {dx:+.1f} mm | Y {dy:+.1f} mm | Z rot {angle_deg:+.1f}\u00b0")
@@ -725,7 +826,7 @@ class RobotPathViewer(QMainWindow):
             with open(self.last_file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
-            # Rewrite data lines with updated X, Y, Z from points_xyz
+            # Rewrite data lines with updated X, Y, Z, A, B, C from the edited pose arrays.
             pt_idx = 0
             new_lines = []
             for line in lines:
@@ -739,6 +840,10 @@ class RobotPathViewer(QMainWindow):
                     parts[1] = f"{self.points_xyz[pt_idx, 0]:.3f}"
                     parts[2] = f"{self.points_xyz[pt_idx, 1]:.3f}"
                     parts[3] = f"{self.points_xyz[pt_idx, 2]:.3f}"
+                    if self.orientations_abc is not None and len(parts) >= 14:
+                        parts[4] = f"{self.orientations_abc[pt_idx, 0]:.3f}"
+                        parts[5] = f"{self.orientations_abc[pt_idx, 1]:.3f}"
+                        parts[6] = f"{self.orientations_abc[pt_idx, 2]:.3f}"
                     new_lines.append(';'.join(parts) + '\n')
                     pt_idx += 1
                 else:
@@ -749,6 +854,8 @@ class RobotPathViewer(QMainWindow):
 
             # Transformed data is now the new baseline
             self._original_points_xyz = self.points_xyz.copy()
+            if self.orientations_abc is not None:
+                self._original_orientations_abc = self.orientations_abc.copy()
             self.spin_edit_x.setValue(0.0)
             self.spin_edit_y.setValue(0.0)
             self.spin_edit_z_rot.setValue(0.0)
@@ -896,7 +1003,7 @@ class RobotPathViewer(QMainWindow):
                 self.combo_ik_config.setCurrentIndex(ik_idx)
 
             if self.last_postprocessor:
-                pp_idx = self.combo_postprocessor.findText(self.last_postprocessor)
+                pp_idx = self.combo_postprocessor.findData(self.last_postprocessor)
                 self.combo_postprocessor.setCurrentIndex(pp_idx if pp_idx >= 0 else -1)
         finally:
             self.updating_sliders = False
@@ -983,11 +1090,26 @@ class RobotPathViewer(QMainWindow):
 
     def populate_postprocessors(self):
         """Scan the Postprocesor directory and populate the combobox."""
+        import importlib.util
+
         self.combo_postprocessor.clear()
         post_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Postprocesor")
         if os.path.isdir(post_dir):
-            scripts = [f for f in os.listdir(post_dir) if f.endswith('.py')]
-            self.combo_postprocessor.addItems(scripts)
+            for fname in sorted(f for f in os.listdir(post_dir) if f.endswith('.py')):
+                script_path = os.path.join(post_dir, fname)
+                if os.path.getsize(script_path) == 0:
+                    continue
+                try:
+                    spec = importlib.util.spec_from_file_location(f"post_{fname[:-3]}", script_path)
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    if getattr(mod, "HIDE_FROM_UI", False):
+                        continue
+                    label = mod.get_label() if hasattr(mod, "get_label") else fname
+                    display = f"{label}  [{fname}]" if label != fname else fname
+                    self.combo_postprocessor.addItem(display, userData=fname)
+                except Exception as exc:
+                    print(f"[Postprocessor] Failed to load {fname}: {exc}")
 
     def _run_postprocessor_async(self, script_path, input_file, output_file, on_finished):
         """Run a postprocessor script as a non-blocking QProcess."""
@@ -997,7 +1119,7 @@ class RobotPathViewer(QMainWindow):
 
     def on_preview_clicked(self):
         """Run the selected postprocessor and open the preview file."""
-        selected = self.combo_postprocessor.currentText()
+        selected = self.combo_postprocessor.currentData()
         if not selected:
             QMessageBox.warning(self, "Warning", "Please select a postprocessor first.")
             return
@@ -1011,11 +1133,23 @@ class RobotPathViewer(QMainWindow):
         os.makedirs(out_dir, exist_ok=True)
         preview_file = os.path.join(out_dir, "preview.txt")
         script_path = os.path.join(app_dir, "Postprocesor", selected)
+        prev_mtime = os.path.getmtime(preview_file) if os.path.exists(preview_file) else None
+        prev_size = os.path.getsize(preview_file) if os.path.exists(preview_file) else None
 
-        self.lbl_status.setText(f"Running preview with {selected}...")
+        self._postprocess_request_id += 1
+        request_id = self._postprocess_request_id
+        self._begin_job("postprocess", f"Running preview with {selected}...")
 
         def on_finished(exit_code, exit_status):
-            if exit_code == 0:
+            if request_id != self._postprocess_request_id:
+                return
+            self._end_job("postprocess")
+            current_mtime = os.path.getmtime(preview_file) if os.path.exists(preview_file) else None
+            current_size = os.path.getsize(preview_file) if os.path.exists(preview_file) else None
+            file_was_updated = current_mtime is not None and (
+                prev_mtime is None or current_mtime != prev_mtime or current_size != prev_size
+            )
+            if exit_code == 0 and file_was_updated:
                 self.lbl_status.setText("Preview generated successfully.")
                 if os.name == 'nt':
                     os.startfile(preview_file)
@@ -1026,14 +1160,14 @@ class RobotPathViewer(QMainWindow):
                     else:
                         subprocess.call(('xdg-open', preview_file))
             else:
-                QMessageBox.critical(self, "Postprocessor Error", f"Postprocessor exited with code {exit_code}.")
+                QMessageBox.critical(self, "Postprocessor Error", "Postprocessor finished without producing a new preview file.")
                 self.lbl_status.setText("Preview failed.")
 
         self._run_postprocessor_async(script_path, self.last_file_path, preview_file, on_finished)
 
     def on_export_clicked(self):
         """Run the selected postprocessor and save to a user-chosen location."""
-        selected = self.combo_postprocessor.currentText()
+        selected = self.combo_postprocessor.currentData()
         if not selected:
             QMessageBox.warning(self, "Warning", "Please select a postprocessor first.")
             return
@@ -1048,15 +1182,27 @@ class RobotPathViewer(QMainWindow):
 
         app_dir = os.path.dirname(os.path.abspath(__file__))
         script_path = os.path.join(app_dir, "Postprocesor", selected)
+        prev_mtime = os.path.getmtime(out_file) if os.path.exists(out_file) else None
+        prev_size = os.path.getsize(out_file) if os.path.exists(out_file) else None
 
-        self.lbl_status.setText(f"Exporting with {selected}...")
+        self._postprocess_request_id += 1
+        request_id = self._postprocess_request_id
+        self._begin_job("postprocess", f"Exporting with {selected}...")
 
         def on_finished(exit_code, exit_status):
-            if exit_code == 0:
+            if request_id != self._postprocess_request_id:
+                return
+            self._end_job("postprocess")
+            current_mtime = os.path.getmtime(out_file) if os.path.exists(out_file) else None
+            current_size = os.path.getsize(out_file) if os.path.exists(out_file) else None
+            file_was_updated = current_mtime is not None and (
+                prev_mtime is None or current_mtime != prev_mtime or current_size != prev_size
+            )
+            if exit_code == 0 and file_was_updated:
                 self.lbl_status.setText(f"Exported successfully to {os.path.basename(out_file)}.")
                 QMessageBox.information(self, "Success", f"File exported successfully to:\n{out_file}")
             else:
-                QMessageBox.critical(self, "Postprocessor Error", f"Postprocessor exited with code {exit_code}.")
+                QMessageBox.critical(self, "Postprocessor Error", "Postprocessor finished without writing the output file.")
                 self.lbl_status.setText("Export failed.")
 
         self._run_postprocessor_async(script_path, self.last_file_path, out_file, on_finished)
@@ -1083,54 +1229,6 @@ class RobotPathViewer(QMainWindow):
     # ------------------------------------------------------------------
     # File loading
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_gcode_format(file_path):
-        """Auto-detect G-code format by scanning the first 200 lines.
-
-        Returns:
-            'nc'    â€” if M3/M5 spindle commands or standalone S lines found
-            'prusa' â€” if E parameter in G1 lines or slicer comments found
-        """
-        has_m3_m5 = False
-        has_standalone_s = False
-        has_e_param = False
-        has_slicer_comment = False
-
-        try:
-            import re as _re
-            with open(file_path, 'r', encoding='utf-8') as f:
-                for i, line in enumerate(f):
-                    if i >= 200:
-                        break
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-
-                    if stripped.startswith('M3') and (len(stripped) == 2 or not stripped[2].isdigit()):
-                        has_m3_m5 = True
-                    if stripped == 'M5' or stripped.startswith('M5 '):
-                        has_m3_m5 = True
-                    if _re.match(r'^S[\d.]+\s*$', stripped):
-                        has_standalone_s = True
-                    if stripped.startswith(';TYPE:') or stripped.startswith(';LAYER_CHANGE'):
-                        has_slicer_comment = True
-                    if stripped.startswith('G1') and ' E' in stripped:
-                        has_e_param = True
-        except Exception:
-            pass
-
-        # Decision
-        if has_m3_m5 or has_standalone_s:
-            return 'nc'
-        if has_e_param or has_slicer_comment:
-            return 'prusa'
-
-        # Fallback by extension
-        _, ext = os.path.splitext(file_path)
-        if ext.lower() == '.nc':
-            return 'nc'
-        return 'prusa'
 
     def populate_importers(self):
         """Scan Importer/ dir, dynamically load each plugin, fill combobox."""
@@ -1214,19 +1312,20 @@ class RobotPathViewer(QMainWindow):
         name_only, _ = os.path.splitext(os.path.basename(self._import_gcode_path))
         csv_out_path = os.path.join(csv_dir, name_only + ".csv")
 
-        self._pending_csv_out = csv_out_path
+        self._import_request_id += 1
+        request_id = self._import_request_id
         self.lbl_import_status.setText(f"Running {fname}...")
-        self.btn_run_import.setEnabled(False)
-        self.btn_select_gcode.setEnabled(False)
+        self._begin_job("import", f"Running {fname}...")
 
         self._import_thread = ImporterThread(mod, self._import_gcode_path, csv_out_path)
-        self._import_thread.finished_signal.connect(self._on_import_finished)
+        self._import_thread.finished_signal.connect(lambda success, payload, rid=request_id: self._on_import_finished(rid, success, payload))
         self._import_thread.start()
 
-    def _on_import_finished(self, success: bool, payload: str):
+    def _on_import_finished(self, request_id: int, success: bool, payload: str):
         """Handle ImporterThread completion."""
-        self.btn_run_import.setEnabled(True)
-        self.btn_select_gcode.setEnabled(True)
+        if request_id != self._import_request_id:
+            return
+        self._end_job("import")
         if success:
             self.lbl_import_status.setText("Import done. Loading CSV...")
             self.lbl_status.setText("Import successful.")
@@ -1286,7 +1385,17 @@ class RobotPathViewer(QMainWindow):
             return
 
         # Show selection dialog
-        labels = [r[0] for r in robots]
+        name_counts = {}
+        for robot_name, _ in robots:
+            name_counts[robot_name] = name_counts.get(robot_name, 0) + 1
+
+        labels = []
+        for robot_name, fpath in robots:
+            if name_counts[robot_name] > 1:
+                rel_path = os.path.relpath(fpath, app_dir)
+                labels.append(f"{robot_name} [{rel_path}]")
+            else:
+                labels.append(robot_name)
         current = 0
         if self.last_urdf_path:
             for i, (_, p) in enumerate(robots):
@@ -1339,16 +1448,16 @@ class RobotPathViewer(QMainWindow):
             self.lbl_robot_name.setText(f"\U0001F916 {robot_display}")
             self.plotter.reset_camera()
 
-            # Enable trajectory test button if data is also loaded
             if self.points_xyz is not None and len(self.points_xyz) > 0:
-                self.btn_test_traj.setEnabled(True)
                 self.color_strip.set_statuses(None)
 
             self.update_plot()
+            self._restore_interaction_state()
 
         except Exception as e:
             QMessageBox.critical(self, "Error Loading Robot", f"Failed to load URDF:\n{e}")
             self.lbl_status.setText("Robot load failed.")
+            self._restore_interaction_state()
 
     def load_file(self, file_path):
         """Start asynchronous loading of a CSV trajectory file."""
@@ -1356,23 +1465,32 @@ class RobotPathViewer(QMainWindow):
             self.lbl_status.setText("Last saved file not found.")
             return
 
+        self._load_request_id += 1
+        request_id = self._load_request_id
         self.last_file_path = file_path
-        self.lbl_status.setText(f"Loading {os.path.basename(file_path)}...")
-        self.h_slider.setEnabled(False)
-        self.v_slider.setEnabled(False)
+        self._begin_job("load", f"Loading {os.path.basename(file_path)}...")
 
         self.loader_thread = DataLoaderThread(file_path)
-        self.loader_thread.finished_signal.connect(self.on_load_finished)
-        self.loader_thread.error_signal.connect(self.on_load_error)
+        self.loader_thread.finished_signal.connect(
+            lambda points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g, rid=request_id:
+                self.on_load_finished(rid, points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g)
+        )
+        self.loader_thread.error_signal.connect(lambda err_msg, rid=request_id: self.on_load_error(rid, err_msg))
         self.loader_thread.start()
 
-    def on_load_error(self, err_msg):
+    def on_load_error(self, request_id, err_msg):
         """Handle CSV loading errors."""
+        if request_id != self._load_request_id:
+            return
+        self._end_job("load")
         QMessageBox.critical(self, "Error Loading File", err_msg)
         self.lbl_status.setText("Load failed.")
 
-    def on_load_finished(self, points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g):
+    def on_load_finished(self, request_id, points_xyz, orientations_abc, colors_rgb, layer_ends, max_layer, estimated_time_s, estimated_weight_g):
         """Handle successful CSV load: store data and update UI."""
+        if request_id != self._load_request_id:
+            return
+        self._end_job("load")
         if points_xyz is None or len(points_xyz) == 0:
             QMessageBox.warning(self, "No Data", "No valid points found in CSV.")
             self.lbl_status.setText("Load failed.")
@@ -1380,6 +1498,7 @@ class RobotPathViewer(QMainWindow):
 
         self.points_xyz = points_xyz
         self._original_points_xyz = points_xyz.copy()
+        self._original_orientations_abc = orientations_abc.copy()
 
         # Reset edit transform when new data is loaded
         self.spin_edit_x.setValue(0.0)
@@ -1390,6 +1509,7 @@ class RobotPathViewer(QMainWindow):
         self.colors_rgb = colors_rgb
         self.layer_end_indices = layer_ends
         self.max_layer = max_layer
+        self._rebuild_segment_index_cache()
 
         # Pre-sort layer ends by end_point for fast binary search in on_h_slider
         self._sorted_layer_ends = sorted(layer_ends.items(), key=lambda kv: kv[1])
@@ -1435,10 +1555,9 @@ class RobotPathViewer(QMainWindow):
         self.lbl_print_weight.setText(f"Estimated weight: {estimated_weight_g:.1f} g")
 
         self.lbl_status.setText(f"Loaded {num_pts} points.")
+        self.color_strip.set_statuses(None)
 
-        if num_pts > 0 and self.robot_sim.urdf_model:
-            self.btn_test_traj.setEnabled(True)
-            self.color_strip.set_statuses(None)
+        self._restore_interaction_state()
 
     # ------------------------------------------------------------------
     # Slider event handlers (with debounce)
@@ -1548,11 +1667,8 @@ class RobotPathViewer(QMainWindow):
         sub_colors = self.colors_rgb[:num_segments]
         sub_points = self.points_xyz[:self.current_step]
 
-        # Identify print vs travel/retract segments by color match
-        is_print_move = np.all(sub_colors == COLOR_PRINT, axis=1)
-
         # --- Actor 1: Print moves (3D tubes) ---
-        print_idx = np.where(is_print_move)[0]
+        print_idx = self._print_segment_indices[self._print_segment_indices < num_segments]
         if self.path_actor_print:
             self.plotter.remove_actor(self.path_actor_print)
             self.path_actor_print = None
@@ -1579,7 +1695,7 @@ class RobotPathViewer(QMainWindow):
                 )
 
         # --- Actor 2: Travel/Retract moves (thin lines) ---
-        travel_idx = np.where(~is_print_move)[0]
+        travel_idx = self._travel_segment_indices[self._travel_segment_indices < num_segments]
         if self.path_actor_travel:
             self.plotter.remove_actor(self.path_actor_travel)
             self.path_actor_travel = None
@@ -1734,12 +1850,9 @@ class RobotPathViewer(QMainWindow):
         if self.points_xyz is None or not self.robot_sim.urdf_model:
             return
 
-        self.btn_test_traj.setEnabled(False)
-        self.btn_load.setEnabled(False)
-        self.btn_load_urdf.setEnabled(False)
-        self.h_slider.setEnabled(False)
-        self.v_slider.setEnabled(False)
-        self.lbl_status.setText("Testing trajectory... This might take a while.")
+        self._traj_request_id += 1
+        request_id = self._traj_request_id
+        self._begin_job("trajectory_test", "Testing trajectory... This might take a while.")
 
         base_params = (self.base_x, self.base_y, self.base_z, self.base_a, self.base_b, self.base_c)
         tool_params = (self.tool_x, self.tool_y, self.tool_z, self.tool_a, self.tool_b, self.tool_c)
@@ -1753,25 +1866,27 @@ class RobotPathViewer(QMainWindow):
             self.points_xyz, self.orientations_abc, self.robot_sim,
             base_params, tool_params, seed_candidates
         )
-        self.traj_thread.progress_signal.connect(self.on_traj_test_progress)
-        self.traj_thread.finished_signal.connect(self.on_traj_test_finished)
+        self.traj_thread.progress_signal.connect(lambda current, total, rid=request_id: self.on_traj_test_progress(rid, current, total))
+        self.traj_thread.finished_signal.connect(lambda statuses, rid=request_id: self.on_traj_test_finished(rid, statuses))
         self.traj_thread.start()
 
-    def on_traj_test_progress(self, current, total):
+    def on_traj_test_progress(self, request_id, current, total):
         """Update status label with trajectory test progress."""
+        if request_id != self._traj_request_id:
+            return
         self.lbl_status.setText(f"Testing trajectory: {current} / {total} points checked")
 
-    def on_traj_test_finished(self, statuses):
+    def on_traj_test_finished(self, request_id, statuses):
         """Handle trajectory test completion."""
+        if request_id != self._traj_request_id:
+            return
+        self._end_job("trajectory_test")
         self.lbl_status.setText("Test complete.")
-        self.btn_test_traj.setEnabled(True)
-        self.btn_load.setEnabled(True)
-        self.btn_load_urdf.setEnabled(True)
-        self.h_slider.setEnabled(True)
-        self.v_slider.setEnabled(True)
 
-        if statuses is not None:
+        if statuses is not None and len(statuses) == len(self.points_xyz):
             self.color_strip.set_statuses(statuses)
+
+        self._restore_interaction_state()
 
     # ------------------------------------------------------------------
     # Settings persistence
@@ -1812,7 +1927,7 @@ class RobotPathViewer(QMainWindow):
 
     def _build_project_config_from_state(self):
         """Create a persistable project config from runtime state."""
-        selected_postprocessor = self.combo_postprocessor.currentText().strip()
+        selected_postprocessor = self.combo_postprocessor.currentData()
         if selected_postprocessor:
             self.last_postprocessor = selected_postprocessor
 
@@ -1863,6 +1978,8 @@ class RobotPathViewer(QMainWindow):
         """Load project settings from a JSON file."""
         if not path:
             return
+        self._clear_trajectory_state()
+        self._clear_robot_state()
         self._project_file = path
         self._project_name = self._project_store.project_name_from_path(path)
         config = self._project_store.load_project(path)
@@ -1883,6 +2000,8 @@ class RobotPathViewer(QMainWindow):
             self._request_update()
         else:
             self.plotter.render()
+
+        self._restore_interaction_state()
 
     def save_settings(self):
         """Save current project (auto-save)."""
@@ -1919,6 +2038,8 @@ class RobotPathViewer(QMainWindow):
 
         # Reset to defaults
         self._apply_project_config_to_state(ProjectConfig())
+        self._clear_trajectory_state()
+        self._clear_robot_state()
 
         self._project_file = path
         self._project_name = self._project_store.project_name_from_path(path)

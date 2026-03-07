@@ -1,6 +1,10 @@
 import sys
 import os
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from trajectory_utils import feature_name, iter_csv_rows
+
 def process_csv(input_csv, output_txt):
     if not os.path.exists(input_csv):
         print(f"Error: Input file {input_csv} does not exist.")
@@ -10,64 +14,30 @@ def process_csv(input_csv, output_txt):
         with open(input_csv, 'r', encoding='utf-8') as infile, \
              open(output_txt, 'w', encoding='ascii', newline='') as outfile:
 
-            for line_idx, line in enumerate(infile):
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
+            for point_no, row in enumerate(iter_csv_rows(infile)):
+                rpm = row.tcp_speed * row.e_ratio
 
-                parts = line.split(';')
-                if len(parts) >= 14:
-                    try:
-                        # TYPE;X;Y;Z;A;B;C;TCP_SPEED;E_RATIO;TEMP;FAN;LAYER;FEATURE;PROGRESS
-                        p_type = parts[0]
-                        x = float(parts[1])
-                        y = float(parts[2])
-                        z = float(parts[3])
-                        a = float(parts[4])
-                        b = float(parts[5])
-                        c = float(parts[6])
-                        tcp_speed = float(parts[7])
-                        e_ratio = float(parts[8])
-                        rpm = tcp_speed * e_ratio
-                        layer = int(parts[11])
-                        progress = int(parts[13])
+                if row.move_type == 'P':
+                    note = f"Print_{feature_name(row.feature, identifier_style=True)}"
+                elif row.move_type == 'T':
+                    note = "Travel"
+                elif row.move_type == 'R':
+                    note = "Retract"
+                elif row.move_type == 'U':
+                    note = "Unretract"
+                else:
+                    note = "Unknown"
 
-                        feature_id = int(parts[12])
-                        feature_map = {
-                            0: "N/A",
-                            1: "Perimeter",
-                            2: "External_Perimeter",
-                            3: "Solid_Infill",
-                            4: "Infill",
-                            5: "Skirt_Brim",
-                            6: "Support"
-                        }
+                note = note[:32]
 
-                        if p_type == 'P':
-                            feature_name = feature_map.get(feature_id, "Unknown")
-                            note = f"Print_{feature_name}"
-                        elif p_type == 'T':
-                            note = "Travel"
-                        elif p_type == 'R':
-                            note = "Retract"
-                        elif p_type == 'U':
-                            note = "Unretract"
-                        else:
-                            note = "Unknown"
-
-                        # Truncate note to 32 chars (CHAR NOTE[32])
-                        note = note[:32]
-
-                        out_line = (
-                            f"{x:.3f} {y:.3f} {z:.3f} "
-                            f"{a:.3f} {b:.3f} {c:.3f} "
-                            f"{tcp_speed:.1f} {rpm:.3f} "
-                            f"{line_idx} {layer} {progress} "
-                            f"{note}"
-                        )
-                        outfile.write(out_line + "\r\n")
-                    except ValueError as ve:
-                        print(f"Skipping line {line_idx} due to value error: {ve}")
+                out_line = (
+                    f"{row.x:.3f} {row.y:.3f} {row.z:.3f} "
+                    f"{row.a:.3f} {row.b:.3f} {row.c:.3f} "
+                    f"{row.tcp_speed:.1f} {rpm:.3f} "
+                    f"{point_no} {row.layer} {row.progress} "
+                    f"{note}"
+                )
+                outfile.write(out_line + "\r\n")
 
         print(f"Successfully processed {input_csv} to {output_txt}")
     except Exception as e:

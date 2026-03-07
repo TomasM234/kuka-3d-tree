@@ -23,6 +23,7 @@ class TrajectoryChunk:
     start: int
     points_xyz: np.ndarray
     orientations_abc: np.ndarray
+    overlap: int = 0
 
 
 def _classify_solution(sim, solution):
@@ -112,6 +113,9 @@ def _run_chunk_worker(config: TrajectoryTestConfig, chunk: TrajectoryChunk):
         if solution is not None:
             prev_solution = solution
 
+    if chunk.overlap > 0:
+        statuses = statuses[chunk.overlap:]
+
     return chunk.start, statuses
 
 
@@ -121,9 +125,19 @@ def _split_chunks(points_xyz, orientations_abc, max_workers, chunk_size):
         chunk_size = max(100, total // max_workers)
 
     chunks = []
+    overlap = 5
     for start in range(0, total, chunk_size):
         end = min(start + chunk_size, total)
-        chunks.append(TrajectoryChunk(start, points_xyz[start:end], orientations_abc[start:end]))
+        chunk_start = max(0, start - overlap)
+        chunk_overlap = start - chunk_start
+        chunks.append(
+            TrajectoryChunk(
+                start,
+                points_xyz[chunk_start:end],
+                orientations_abc[chunk_start:end],
+                overlap=chunk_overlap
+            )
+        )
     return chunks
 
 
