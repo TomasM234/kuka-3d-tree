@@ -1,11 +1,14 @@
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from trajectory_schema import feature_name, iter_csv_rows
 
-from trajectory_utils import feature_name, iter_csv_rows
 
-def process_csv_advanced(input_csv, output_txt):
+def get_label() -> str:
+    return "Two-line export (8 columns)"
+
+
+def run_export(input_csv, output_txt):
     if not os.path.exists(input_csv):
         print(f"Error: Input file {input_csv} does not exist.")
         sys.exit(1)
@@ -42,6 +45,12 @@ def process_csv_advanced(input_csv, output_txt):
         print(f"Error processing file: {e}")
         sys.exit(1)
 
+
+def process_csv_advanced(input_csv, output_txt):
+    """Compatibility wrapper for existing tests/scripts."""
+    run_export(input_csv, output_txt)
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python complex_export.py <input_csv> <output_txt>")
@@ -49,4 +58,4 @@ if __name__ == "__main__":
         
     input_file = sys.argv[1]
     output_file = sys.argv[2]
-    process_csv_advanced(input_file, output_file)
+    run_export(input_file, output_file)

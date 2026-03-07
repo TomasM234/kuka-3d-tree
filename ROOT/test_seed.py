@@ -2,12 +2,14 @@ import sys
 import os
 import numpy as np
 
-sys.path.append('d:/Skola/Ostatni/TREE/GIT/ROOT')
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from robot_ik import RobotSimulator
-from viewer import IK_CONFIGS
 
 sim = RobotSimulator()
-urdf_file = 'd:/Skola/Ostatni/TREE/GIT/ROOT/kuka_robot_descriptions-master/urdf/kr210_r2700_2.urdf'
+urdf_file = os.path.join(ROOT_DIR, 'kuka_robot_descriptions-master', 'urdf', 'kr210_r2700_2.urdf')
 sim.load_robot(urdf_file)
 
 print("Active joints:", sim.active_joints)

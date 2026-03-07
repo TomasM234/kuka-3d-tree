@@ -26,6 +26,12 @@ class TrajectoryChunk:
     overlap: int = 0
 
 
+_WORKER_SIM = None
+_WORKER_T_BASE = None
+_WORKER_T_TOOL_INV = None
+_WORKER_SEED_TEMPLATES = ()
+
+
 def _classify_solution(sim, solution):
     """Return unified status code from RobotSimulator evaluation."""
     evaluation = sim.evaluate_solution(solution)
@@ -72,18 +78,28 @@ def _pick_initial_solution(sim, target_pos, target_ori, seed_templates):
     return best_seed, best_solution, best_status
 
 
-def _run_chunk_worker(config: TrajectoryTestConfig, chunk: TrajectoryChunk):
-    """Worker entrypoint for a single chunk."""
+def _init_worker(config: TrajectoryTestConfig):
+    """Load robot/model state once per worker process."""
     from robot_ik import RobotSimulator
+
+    global _WORKER_SIM, _WORKER_T_BASE, _WORKER_T_TOOL_INV, _WORKER_SEED_TEMPLATES
 
     sim = RobotSimulator()
     sim.load_robot(config.urdf_path)
 
     b_x, b_y, b_z, b_a, b_b, b_c = config.base_params
     t_x, t_y, t_z, t_a, t_b, t_c = config.tool_params
-    t_base = kuka_base_to_matrix(b_x, b_y, b_z, b_a, b_b, b_c)
+    _WORKER_SIM = sim
+    _WORKER_T_BASE = kuka_base_to_matrix(b_x, b_y, b_z, b_a, b_b, b_c)
     t_tool = kuka_base_to_matrix(t_x, t_y, t_z, t_a, t_b, t_c)
-    t_tool_inv = np.linalg.inv(t_tool)
+    _WORKER_T_TOOL_INV = np.linalg.inv(t_tool)
+    _WORKER_SEED_TEMPLATES = config.seed_templates
+
+
+def _run_chunk_worker(chunk: TrajectoryChunk):
+    """Worker entrypoint for a single chunk."""
+    if _WORKER_SIM is None or _WORKER_T_BASE is None or _WORKER_T_TOOL_INV is None:
+        raise RuntimeError("Trajectory test worker was not initialized.")
 
     n = len(chunk.points_xyz)
     statuses = np.zeros(n, dtype=np.int8)
@@ -91,10 +107,10 @@ def _run_chunk_worker(config: TrajectoryTestConfig, chunk: TrajectoryChunk):
         return chunk.start, statuses
 
     first_target_pos, first_target_ori = _resolve_target_transform(
-        chunk.points_xyz[0], chunk.orientations_abc[0], t_base, t_tool_inv
+        chunk.points_xyz[0], chunk.orientations_abc[0], _WORKER_T_BASE, _WORKER_T_TOOL_INV
     )
     best_seed, best_solution, best_status = _pick_initial_solution(
-        sim, first_target_pos, first_target_ori, config.seed_templates
+        _WORKER_SIM, first_target_pos, first_target_ori, _WORKER_SEED_TEMPLATES
     )
     statuses[0] = best_status
 
@@ -102,14 +118,14 @@ def _run_chunk_worker(config: TrajectoryTestConfig, chunk: TrajectoryChunk):
 
     for i in range(1, n):
         target_pos, target_ori = _resolve_target_transform(
-            chunk.points_xyz[i], chunk.orientations_abc[i], t_base, t_tool_inv
+            chunk.points_xyz[i], chunk.orientations_abc[i], _WORKER_T_BASE, _WORKER_T_TOOL_INV
         )
-        solution = sim.calculate_ik(
+        solution = _WORKER_SIM.calculate_ik(
             target_pos,
             target_orientation=target_ori,
             initial_position=prev_solution
         )
-        statuses[i] = _classify_solution(sim, solution)
+        statuses[i] = _classify_solution(_WORKER_SIM, solution)
         if solution is not None:
             prev_solution = solution
 
@@ -161,8 +177,23 @@ def run_trajectory_test_parallel(points_xyz, orientations_abc, config: Trajector
     if progress_callback is not None:
         progress_callback(0, total)
 
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run_chunk_worker, config, chunk): chunk for chunk in chunks}
+    if max_workers == 1:
+        _init_worker(config)
+        for chunk in chunks:
+            start, chunk_result = _run_chunk_worker(chunk)
+            length = len(chunk_result)
+            statuses[start:start + length] = chunk_result
+            completed += length
+            if progress_callback is not None:
+                progress_callback(completed, total)
+        return statuses
+
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_worker,
+        initargs=(config,),
+    ) as pool:
+        futures = {pool.submit(_run_chunk_worker, chunk): chunk for chunk in chunks}
         for future in as_completed(futures):
             start, chunk_result = future.result()
             length = len(chunk_result)
