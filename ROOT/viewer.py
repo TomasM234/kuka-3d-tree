@@ -1,5 +1,4 @@
 ﻿import os
-import json
 import subprocess
 import sys
 import multiprocessing
@@ -17,6 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QTimer, QProcess
 from PyQt6.QtGui import QPainter, QColor
 from pose_math import kuka_base_to_matrix, matrix_to_kuka_abc
+from project_config import DEFAULT_IK_CONFIG, ProjectConfig, ProjectConfigStore
 from trajectory_test_lib import TrajectoryTestConfig, run_trajectory_test_parallel
 
 # robot_ik (ikpy / yourdfpy / trimesh) is also imported lazily in __main__.
@@ -285,9 +285,11 @@ class RobotPathViewer(QMainWindow):
         app_dir = os.path.dirname(os.path.abspath(__file__))
         self._meta_file = os.path.join(app_dir, "viewer_settings.json")
         self._project_dir = os.path.join(app_dir, "Project")
-        os.makedirs(self._project_dir, exist_ok=True)
+        self._project_store = ProjectConfigStore(self._meta_file, self._project_dir)
         self._project_file = ""  # resolved by _load_meta()
         self._project_name = "default"
+
+        default_project = ProjectConfig()
 
         # Data state
         self.points_xyz = None
@@ -299,34 +301,10 @@ class RobotPathViewer(QMainWindow):
         self.max_layer = 0
         self.current_step = 0
         self.current_layer = 0
-        self.print_thickness = 1.0
-        self.last_file_path = ""
-        self.last_postprocessor = ""
-        self.last_urdf_path = ""
+        self._apply_project_config_to_state(default_project)
 
         # Table state
-        self.table_x1 = 0.0
-        self.table_y1 = 0.0
-        self.table_x2 = 550.0
-        self.table_y2 = 650.0
-        self.show_table = True
-        self.show_robot = True
         self.table_actor = None
-
-        # Transform state
-        self.base_x = 0.0
-        self.base_y = 0.0
-        self.base_z = 0.0
-        self.base_a = 0.0
-        self.base_b = 0.0
-        self.base_c = 0.0
-
-        self.tool_x = 0.0
-        self.tool_y = 0.0
-        self.tool_z = 0.0
-        self.tool_a = 0.0
-        self.tool_b = 0.0
-        self.tool_c = 0.0
 
         # Robot simulator
         self.robot_sim = RobotSimulator()
@@ -431,7 +409,7 @@ class RobotPathViewer(QMainWindow):
         # ---- PROJECT ----------------------------------------------------
         self.layout_general.addWidget(QLabel("<b>PROJECT</b>"))
 
-        self.lbl_project_name = QLabel("đź“ default")
+        self.lbl_project_name = QLabel("\U0001F4C1 default")
         self.lbl_project_name.setWordWrap(True)
         self.layout_general.addWidget(self.lbl_project_name)
 
@@ -873,9 +851,8 @@ class RobotPathViewer(QMainWindow):
 
         self.view_isometric()
 
-        # Load persisted settings and sync UI
+        # Load persisted settings
         self.load_settings()
-        self._sync_ui_from_state()
 
         # Auto-load last files
         if self.last_file_path and os.path.exists(self.last_file_path):
@@ -887,32 +864,42 @@ class RobotPathViewer(QMainWindow):
     def _sync_ui_from_state(self):
         """Push all internal state values into UI widgets without triggering callbacks."""
         self.updating_sliders = True
+        try:
+            self.lbl_project_name.setText(f"\U0001F4C1 {self._project_name}")
+            self.slider_thick.setValue(int(self.print_thickness * 10))
+            self.lbl_thickness.setText(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
 
-        self.slider_thick.setValue(int(self.print_thickness * 10))
+            self.spin_base_x.setValue(self.base_x)
+            self.spin_base_y.setValue(self.base_y)
+            self.spin_base_z.setValue(self.base_z)
+            self.spin_base_a.setValue(self.base_a)
+            self.spin_base_b.setValue(self.base_b)
+            self.spin_base_c.setValue(self.base_c)
 
-        self.spin_base_x.setValue(self.base_x)
-        self.spin_base_y.setValue(self.base_y)
-        self.spin_base_z.setValue(self.base_z)
-        self.spin_base_a.setValue(self.base_a)
-        self.spin_base_b.setValue(self.base_b)
-        self.spin_base_c.setValue(self.base_c)
+            self.spin_tool_x.setValue(self.tool_x)
+            self.spin_tool_y.setValue(self.tool_y)
+            self.spin_tool_z.setValue(self.tool_z)
+            self.spin_tool_a.setValue(self.tool_a)
+            self.spin_tool_b.setValue(self.tool_b)
+            self.spin_tool_c.setValue(self.tool_c)
 
-        self.spin_tool_x.setValue(self.tool_x)
-        self.spin_tool_y.setValue(self.tool_y)
-        self.spin_tool_z.setValue(self.tool_z)
-        self.spin_tool_a.setValue(self.tool_a)
-        self.spin_tool_b.setValue(self.tool_b)
-        self.spin_tool_c.setValue(self.tool_c)
+            self.check_show_table.setChecked(self.show_table)
+            self.check_show_robot.setChecked(self.show_robot)
 
-        self.check_show_table.setChecked(self.show_table)
-        self.check_show_robot.setChecked(self.show_robot)
+            self.spin_table_x1.setValue(self.table_x1)
+            self.spin_table_y1.setValue(self.table_y1)
+            self.spin_table_x2.setValue(self.table_x2)
+            self.spin_table_y2.setValue(self.table_y2)
 
-        self.spin_table_x1.setValue(self.table_x1)
-        self.spin_table_y1.setValue(self.table_y1)
-        self.spin_table_x2.setValue(self.table_x2)
-        self.spin_table_y2.setValue(self.table_y2)
+            ik_idx = self.combo_ik_config.findText(self.ik_config)
+            if ik_idx >= 0:
+                self.combo_ik_config.setCurrentIndex(ik_idx)
 
-        self.updating_sliders = False
+            if self.last_postprocessor:
+                pp_idx = self.combo_postprocessor.findText(self.last_postprocessor)
+                self.combo_postprocessor.setCurrentIndex(pp_idx if pp_idx >= 0 else -1)
+        finally:
+            self.updating_sliders = False
 
     # ------------------------------------------------------------------
     # Table & Robot visibility
@@ -1794,24 +1781,76 @@ class RobotPathViewer(QMainWindow):
     # Project management
     # ------------------------------------------------------------------
 
+    def _apply_project_config_to_state(self, config):
+        """Load project-config values into runtime state attributes."""
+        self.print_thickness = config.print_thickness
+        self.last_file_path = config.last_file_path
+        self.last_postprocessor = config.last_postprocessor
+        self.last_urdf_path = config.last_urdf_path
+
+        self.base_x = config.base_x
+        self.base_y = config.base_y
+        self.base_z = config.base_z
+        self.base_a = config.base_a
+        self.base_b = config.base_b
+        self.base_c = config.base_c
+
+        self.tool_x = config.tool_x
+        self.tool_y = config.tool_y
+        self.tool_z = config.tool_z
+        self.tool_a = config.tool_a
+        self.tool_b = config.tool_b
+        self.tool_c = config.tool_c
+
+        self.table_x1 = config.table_x1
+        self.table_y1 = config.table_y1
+        self.table_x2 = config.table_x2
+        self.table_y2 = config.table_y2
+        self.show_table = config.show_table
+        self.show_robot = config.show_robot
+        self.ik_config = config.ik_config or DEFAULT_IK_CONFIG
+
+    def _build_project_config_from_state(self):
+        """Create a persistable project config from runtime state."""
+        selected_postprocessor = self.combo_postprocessor.currentText().strip()
+        if selected_postprocessor:
+            self.last_postprocessor = selected_postprocessor
+
+        return ProjectConfig(
+            print_thickness=self.print_thickness,
+            last_file_path=self.last_file_path,
+            last_postprocessor=self.last_postprocessor,
+            last_urdf_path=self.last_urdf_path,
+            base_x=self.base_x,
+            base_y=self.base_y,
+            base_z=self.base_z,
+            base_a=self.base_a,
+            base_b=self.base_b,
+            base_c=self.base_c,
+            tool_x=self.tool_x,
+            tool_y=self.tool_y,
+            tool_z=self.tool_z,
+            tool_a=self.tool_a,
+            tool_b=self.tool_b,
+            tool_c=self.tool_c,
+            table_x1=self.table_x1,
+            table_y1=self.table_y1,
+            table_x2=self.table_x2,
+            table_y2=self.table_y2,
+            show_table=self.show_table,
+            show_robot=self.show_robot,
+            ik_config=self.ik_config or DEFAULT_IK_CONFIG
+        )
+
     def _load_meta(self):
         """Read viewer_settings.json to determine which project to open."""
-        proj_name = "default.json"
-        if os.path.exists(self._meta_file):
-            try:
-                with open(self._meta_file, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-                    proj_name = meta.get("last_project", "default.json")
-            except Exception:
-                pass
-        self._project_file = os.path.join(self._project_dir, proj_name)
-        self._project_name = os.path.splitext(proj_name)[0]
+        self._project_file = self._project_store.load_last_project_path()
+        self._project_name = self._project_store.project_name_from_path(self._project_file)
 
     def _save_meta(self):
         """Write the current project name to viewer_settings.json."""
         try:
-            with open(self._meta_file, 'w', encoding='utf-8') as f:
-                json.dump({"last_project": os.path.basename(self._project_file)}, f, indent=4)
+            self._project_store.save_last_project_path(self._project_file)
         except Exception as e:
             print(f"Error saving meta: {e}")
 
@@ -1822,103 +1861,24 @@ class RobotPathViewer(QMainWindow):
 
     def _load_project(self, path):
         """Load project settings from a JSON file."""
-        if not os.path.exists(path):
+        if not path:
             return
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-
-            self._project_file = path
-            self._project_name = os.path.splitext(os.path.basename(path))[0]
-
-            self.print_thickness = config.get("print_thickness", 1.0)
-            self.last_file_path = config.get("last_file_path", "")
-            self.last_postprocessor = config.get("last_postprocessor", "")
-            self.last_urdf_path = config.get("last_urdf_path", "")
-
-            self.base_x = config.get("base_x", 0.0)
-            self.base_y = config.get("base_y", 0.0)
-            self.base_z = config.get("base_z", 0.0)
-            self.base_a = config.get("base_a", 0.0)
-            self.base_b = config.get("base_b", 0.0)
-            self.base_c = config.get("base_c", 0.0)
-
-            self.tool_x = config.get("tool_x", 0.0)
-            self.tool_y = config.get("tool_y", 0.0)
-            self.tool_z = config.get("tool_z", 0.0)
-            self.tool_a = config.get("tool_a", 0.0)
-            self.tool_b = config.get("tool_b", 0.0)
-            self.tool_c = config.get("tool_c", 0.0)
-
-            self.table_x1 = config.get("table_x1", 0.0)
-            self.table_y1 = config.get("table_y1", 0.0)
-            self.table_x2 = config.get("table_x2", 550.0)
-            self.table_y2 = config.get("table_y2", 650.0)
-            self.show_table = config.get("show_table", True)
-            self.show_robot = config.get("show_robot", True)
-            self.ik_config = config.get("ik_config", "Elbow Up / Front")
-
-            if self.last_postprocessor:
-                idx = self.combo_postprocessor.findText(self.last_postprocessor)
-                if idx >= 0:
-                    self.combo_postprocessor.setCurrentIndex(idx)
-
-            self._apply_project_to_ui()
-
-        except Exception as e:
-            print(f"Error loading project: {e}")
+        self._project_file = path
+        self._project_name = self._project_store.project_name_from_path(path)
+        config = self._project_store.load_project(path)
+        self._apply_project_config_to_state(config)
+        self._apply_project_to_ui()
 
     def _apply_project_to_ui(self):
         """Push current project values into all UI widgets."""
-        self.updating_sliders = True
-        try:
-            self.lbl_project_name.setText(f"\U0001F4C1 {self._project_name}")
-
-            # Thickness
-            self.slider_thick.setValue(int(self.print_thickness * 10))
-            self.lbl_thickness.setText(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
-
-            # Table
-            self.check_show_table.setChecked(self.show_table)
-            self.spin_table_x1.setValue(self.table_x1)
-            self.spin_table_y1.setValue(self.table_y1)
-            self.spin_table_x2.setValue(self.table_x2)
-            self.spin_table_y2.setValue(self.table_y2)
-
-            # Robot visibility
-            self.check_show_robot.setChecked(self.show_robot)
-
-            # IK Config
-            idx = self.combo_ik_config.findText(self.ik_config)
-            if idx >= 0:
-                self.combo_ik_config.setCurrentIndex(idx)
-
-            # Base frame
-            self.spin_base_x.setValue(self.base_x)
-            self.spin_base_y.setValue(self.base_y)
-            self.spin_base_z.setValue(self.base_z)
-            self.spin_base_a.setValue(self.base_a)
-            self.spin_base_b.setValue(self.base_b)
-            self.spin_base_c.setValue(self.base_c)
-
-            # Tool frame
-            self.spin_tool_x.setValue(self.tool_x)
-            self.spin_tool_y.setValue(self.tool_y)
-            self.spin_tool_z.setValue(self.tool_z)
-            self.spin_tool_a.setValue(self.tool_a)
-            self.spin_tool_b.setValue(self.tool_b)
-            self.spin_tool_c.setValue(self.tool_c)
-        finally:
-            self.updating_sliders = False
-            
+        self._sync_ui_from_state()
         self._reset_ik_tracking()
-            
-        # VynucenĂ© pĹ™ekreslenĂ­ vizuĂˇlnĂ­ch objektĹŻ, protoĹľe udĂˇlosti byly potlaÄŤeny
+
         self.draw_table()
-        
+
         for actor in self.robot_actors.values():
             actor.SetVisibility(self.show_robot)
-            
+
         if self.points_xyz is not None:
             self._request_update()
         else:
@@ -1932,34 +1892,9 @@ class RobotPathViewer(QMainWindow):
         """Write all workspace settings to the current project file."""
         if not self._project_file:
             return
-        config = {
-            "print_thickness": self.print_thickness,
-            "last_file_path": self.last_file_path,
-            "last_postprocessor": self.combo_postprocessor.currentText(),
-            "last_urdf_path": self.last_urdf_path,
-            "base_x": self.base_x,
-            "base_y": self.base_y,
-            "base_z": self.base_z,
-            "base_a": self.base_a,
-            "base_b": self.base_b,
-            "base_c": self.base_c,
-            "tool_x": self.tool_x,
-            "tool_y": self.tool_y,
-            "tool_z": self.tool_z,
-            "tool_a": self.tool_a,
-            "tool_b": self.tool_b,
-            "tool_c": self.tool_c,
-            "table_x1": self.table_x1,
-            "table_y1": self.table_y1,
-            "table_x2": self.table_x2,
-            "table_y2": self.table_y2,
-            "show_table": self.show_table,
-            "show_robot": self.show_robot,
-            "ik_config": self.ik_config
-        }
         try:
-            with open(self._project_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=4)
+            config = self._build_project_config_from_state()
+            self._project_store.save_project(self._project_file, config)
         except Exception as e:
             print(f"Error saving project: {e}")
 
@@ -1969,35 +1904,24 @@ class RobotPathViewer(QMainWindow):
         name, ok = QInputDialog.getText(self, "New Project", "Project name:")
         if not ok or not name.strip():
             return
-        name = name.strip()
-        if not name.endswith('.json'):
-            name += '.json'
-        path = os.path.join(self._project_dir, name)
+        try:
+            path = self._project_store.project_path(name)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Name", "Project name cannot be empty.")
+            return
         if os.path.exists(path):
-            QMessageBox.warning(self, "Exists", f"Project '{name}' already exists.")
+            filename = os.path.basename(path)
+            QMessageBox.warning(self, "Exists", f"Project '{filename}' already exists.")
             return
 
         # Save current project first
         self._save_project()
 
         # Reset to defaults
-        self.print_thickness = 1.0
-        self.last_file_path = ""
-        self.last_postprocessor = ""
-        self.last_urdf_path = ""
-        self.ik_config = "Elbow Up / Front"
-        self.base_x = self.base_y = self.base_z = 0.0
-        self.base_a = self.base_b = self.base_c = 0.0
-        self.tool_x = self.tool_y = self.tool_z = 0.0
-        self.tool_a = self.tool_b = self.tool_c = 0.0
-        self.table_x1 = self.table_y1 = 0.0
-        self.table_x2 = 550.0
-        self.table_y2 = 650.0
-        self.show_table = True
-        self.show_robot = True
+        self._apply_project_config_to_state(ProjectConfig())
 
         self._project_file = path
-        self._project_name = os.path.splitext(os.path.basename(path))[0]
+        self._project_name = self._project_store.project_name_from_path(path)
         self._save_project()
         self._save_meta()
         self._apply_project_to_ui()
@@ -2006,15 +1930,16 @@ class RobotPathViewer(QMainWindow):
     def _open_project(self):
         """Show a list of available projects and load the selected one."""
         from PyQt6.QtWidgets import QInputDialog
-        projects = sorted(f for f in os.listdir(self._project_dir) if f.endswith('.json'))
+        projects = self._project_store.list_projects()
         if not projects:
             QMessageBox.information(self, "No Projects", "No projects found in Project/ directory.")
             return
 
-        labels = [os.path.splitext(f)[0] for f in projects]
+        labels = [self._project_store.project_name_from_path(path) for path in projects]
+        current_project_file = os.path.normcase(os.path.abspath(self._project_file))
         current = 0
-        for i, f in enumerate(projects):
-            if f == os.path.basename(self._project_file):
+        for i, project_path in enumerate(projects):
+            if os.path.normcase(os.path.abspath(project_path)) == current_project_file:
                 current = i
                 break
 
@@ -2028,7 +1953,7 @@ class RobotPathViewer(QMainWindow):
         self._save_project()
 
         idx = labels.index(chosen)
-        path = os.path.join(self._project_dir, projects[idx])
+        path = projects[idx]
         self._load_project(path)
         self._save_meta()
 
@@ -2050,16 +1975,17 @@ class RobotPathViewer(QMainWindow):
             text=self._project_name)
         if not ok or not name.strip():
             return
-        name = name.strip()
-        if not name.endswith('.json'):
-            name += '.json'
-        path = os.path.join(self._project_dir, name)
+        try:
+            path = self._project_store.project_path(name)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Name", "Project name cannot be empty.")
+            return
 
         self._project_file = path
-        self._project_name = os.path.splitext(name)[0]
+        self._project_name = self._project_store.project_name_from_path(path)
         self._save_project()
         self._save_meta()
-        self.lbl_project_name.setText(f"\U0001F4C1 {self._project_name}")
+        self._sync_ui_from_state()
         self.lbl_status.setText(f"Project saved as '{self._project_name}'.")
 
     def closeEvent(self, event):
