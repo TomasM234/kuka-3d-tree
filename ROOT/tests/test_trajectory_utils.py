@@ -1,18 +1,11 @@
-import os
-import sys
 import unittest
 
 import numpy as np
 
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from trajectory_utils import apply_planar_edit_transform, parse_csv_row
+from ROOT.trajectory_schema import apply_planar_edit_transform, parse_csv_row
 
 
-class TrajectoryUtilsTests(unittest.TestCase):
+class TrajectorySchemaTransformTests(unittest.TestCase):
     def test_planar_transform_rotates_points_and_orientations(self):
         points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
         orientations = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)

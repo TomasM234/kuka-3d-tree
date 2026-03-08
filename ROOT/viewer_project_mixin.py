@@ -2,38 +2,19 @@ import os
 
 from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
-from project_config import DEFAULT_IK_CONFIG, ProjectConfig
+from .error_reporting import get_logger
+from .project_config import DEFAULT_IK_CONFIG, PROJECT_STATE_ATTRS, ProjectConfig
+
+
+logger = get_logger(__name__)
 
 
 class ViewerProjectMixin:
     def _apply_project_config_to_state(self, config):
         """Load project-config values into runtime state attributes."""
-        self.print_thickness = config.print_thickness
-        self.last_file_path = config.last_file_path
-        self.last_postprocessor = config.last_postprocessor
-        self.last_urdf_path = config.last_urdf_path
-
-        self.base_x = config.base_x
-        self.base_y = config.base_y
-        self.base_z = config.base_z
-        self.base_a = config.base_a
-        self.base_b = config.base_b
-        self.base_c = config.base_c
-
-        self.tool_x = config.tool_x
-        self.tool_y = config.tool_y
-        self.tool_z = config.tool_z
-        self.tool_a = config.tool_a
-        self.tool_b = config.tool_b
-        self.tool_c = config.tool_c
-
-        self.table_x1 = config.table_x1
-        self.table_y1 = config.table_y1
-        self.table_x2 = config.table_x2
-        self.table_y2 = config.table_y2
-        self.show_table = config.show_table
-        self.show_robot = config.show_robot
-        self.ik_config = config.ik_config or DEFAULT_IK_CONFIG
+        for attr_name in PROJECT_STATE_ATTRS:
+            setattr(self, attr_name, getattr(config, attr_name))
+        self.ik_config = self.ik_config or DEFAULT_IK_CONFIG
 
     def _build_project_config_from_state(self):
         """Create a persistable project config from runtime state."""
@@ -41,31 +22,9 @@ class ViewerProjectMixin:
         if selected_postprocessor:
             self.last_postprocessor = selected_postprocessor.file_name
 
-        return ProjectConfig(
-            print_thickness=self.print_thickness,
-            last_file_path=self.last_file_path,
-            last_postprocessor=self.last_postprocessor,
-            last_urdf_path=self.last_urdf_path,
-            base_x=self.base_x,
-            base_y=self.base_y,
-            base_z=self.base_z,
-            base_a=self.base_a,
-            base_b=self.base_b,
-            base_c=self.base_c,
-            tool_x=self.tool_x,
-            tool_y=self.tool_y,
-            tool_z=self.tool_z,
-            tool_a=self.tool_a,
-            tool_b=self.tool_b,
-            tool_c=self.tool_c,
-            table_x1=self.table_x1,
-            table_y1=self.table_y1,
-            table_x2=self.table_x2,
-            table_y2=self.table_y2,
-            show_table=self.show_table,
-            show_robot=self.show_robot,
-            ik_config=self.ik_config or DEFAULT_IK_CONFIG,
-        )
+        payload = {attr_name: getattr(self, attr_name) for attr_name in PROJECT_STATE_ATTRS}
+        payload["ik_config"] = self.ik_config or DEFAULT_IK_CONFIG
+        return ProjectConfig(**payload)
 
     def _load_meta(self):
         """Read viewer_settings.json to determine which project to open."""
@@ -76,8 +35,8 @@ class ViewerProjectMixin:
         """Write the current project name to viewer_settings.json."""
         try:
             self._project_store.save_last_project_path(self._project_file)
-        except Exception as exc:
-            print(f"Error saving meta: {exc}")
+        except Exception:
+            logger.exception("Failed to save viewer metadata")
 
     def load_settings(self):
         """Load meta + project settings."""
@@ -124,8 +83,8 @@ class ViewerProjectMixin:
         try:
             config = self._build_project_config_from_state()
             self._project_store.save_project(self._project_file, config)
-        except Exception as exc:
-            print(f"Error saving project: {exc}")
+        except Exception:
+            logger.exception("Failed to save project %s", self._project_file)
 
     def _new_project(self):
         """Create a new project with default settings."""

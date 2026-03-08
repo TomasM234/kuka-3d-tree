@@ -1,21 +1,14 @@
-import os
-import sys
 import tempfile
 import unittest
 
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from Importer.parse_nc import run_import
+from ROOT.Importer.parse_nc import run_import
 
 
 class ParseNcTests(unittest.TestCase):
     def _run_import(self, program_text):
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "input.nc")
-            out_path = os.path.join(tmpdir, "output.csv")
+            src_path = f"{tmpdir}/input.nc"
+            out_path = f"{tmpdir}/output.csv"
             with open(src_path, "w", encoding="utf-8") as f:
                 f.write(program_text.strip() + "\n")
 

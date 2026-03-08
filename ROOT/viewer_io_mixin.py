@@ -5,11 +5,33 @@ import sys
 from PyQt6.QtCore import QProcess
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QInputDialog
 
-from robot_catalog import RobotLoadThread, discover_robot_descriptors
-from viewer_components import DataLoaderThread, ImporterThread
+from .app_paths import CSV_DIR, GCODE_DIR, OUTPUT_DIR, PACKAGE_DIR, REPO_ROOT, ensure_directory
+from .error_reporting import get_logger
+from .plugin_registry import discover_python_plugins
+from .robot_catalog import RobotLoadThread, discover_robot_descriptors
+from .viewer_components import DataLoaderThread, ImporterThread
+
+
+logger = get_logger(__name__)
 
 
 class ViewerIOMixin:
+    def _discover_plugins(self, relative_dir, required_attrs=()):
+        """Discover Python plugins relative to the ROOT application directory."""
+        plugin_dir = PACKAGE_DIR / relative_dir
+        return discover_python_plugins(plugin_dir, REPO_ROOT, required_attrs=required_attrs)
+
+    def _select_plugin_by_file_name(self, combo, file_name):
+        """Select combobox item by plugin file name, or clear the selection."""
+        target_index = -1
+        if file_name:
+            for idx in range(combo.count()):
+                spec = combo.itemData(idx)
+                if spec is not None and getattr(spec, "file_name", None) == file_name:
+                    target_index = idx
+                    break
+        combo.setCurrentIndex(target_index)
+
     def _capture_file_state(self, file_path):
         if not os.path.exists(file_path):
             return None
@@ -44,9 +66,9 @@ class ViewerIOMixin:
     ):
         previous_state = self._capture_file_state(output_file)
         ticket = self._begin_job("postprocess", status_text)
-        self._postprocess_ticket = ticket
 
         def on_finished(exit_code, exit_status):
+            del exit_status
             if not self.task_controller.is_current(ticket):
                 return
             self._end_job(ticket)
@@ -56,6 +78,7 @@ class ViewerIOMixin:
                     success_callback(output_file)
                 return
 
+            logger.error("Postprocessor %s did not produce expected output %s", plugin_spec.file_name, output_file)
             QMessageBox.critical(self, "Postprocessor Error", failure_message)
             self.lbl_status.setText(failure_status)
 
@@ -72,7 +95,7 @@ class ViewerIOMixin:
     def _run_postprocessor_async(self, plugin_spec, input_file, output_file, on_finished):
         """Run a postprocessor script as a non-blocking QProcess."""
         self._qprocess = QProcess(self)
-        self._qprocess.setWorkingDirectory(os.path.dirname(os.path.abspath(__file__)))
+        self._qprocess.setWorkingDirectory(str(REPO_ROOT))
         self._qprocess.finished.connect(on_finished)
         self._qprocess.start(sys.executable, ["-m", plugin_spec.module_name, input_file, output_file])
 
@@ -87,10 +110,7 @@ class ViewerIOMixin:
             QMessageBox.warning(self, "Warning", "Please load a CSV file first.")
             return
 
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        out_dir = os.path.join(app_dir, "Output")
-        os.makedirs(out_dir, exist_ok=True)
-        preview_file = os.path.join(out_dir, "preview.txt")
+        preview_file = str(ensure_directory(OUTPUT_DIR) / "preview.txt")
         self._run_postprocessor_job(
             plugin_spec,
             preview_file,
@@ -143,14 +163,10 @@ class ViewerIOMixin:
 
     def _select_gcode_for_import(self):
         """Open GCODE/ dialog, call each plugin's can_handle() to pre-select."""
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        gcode_dir = os.path.join(app_dir, "GCODE")
-        os.makedirs(gcode_dir, exist_ok=True)
-
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select G-Code File",
-            gcode_dir,
+            str(ensure_directory(GCODE_DIR)),
             "G-Code Files (*.gcode *.gco *.nc);;All Files (*)",
         )
         if not file_path:
@@ -166,6 +182,7 @@ class ViewerIOMixin:
                     matched = i
                     break
             except Exception:
+                logger.exception("Importer auto-detection failed for %s", getattr(spec, "file_name", "<unknown>"))
                 continue
 
         if matched >= 0:
@@ -195,15 +212,11 @@ class ViewerIOMixin:
         mod = plugin_spec.module
         fname = plugin_spec.file_name
 
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_dir = os.path.join(app_dir, "CSV")
-        os.makedirs(csv_dir, exist_ok=True)
         name_only, _ = os.path.splitext(os.path.basename(self._import_gcode_path))
-        csv_out_path = os.path.join(csv_dir, name_only + ".csv")
+        csv_out_path = str(ensure_directory(CSV_DIR) / f"{name_only}.csv")
 
         self.lbl_import_status.setText(f"Running {fname}...")
         ticket = self._begin_job("import", f"Running {fname}...")
-        self._import_ticket = ticket
 
         self._import_thread = ImporterThread(mod, self._import_gcode_path, csv_out_path)
         self._import_thread.finished_signal.connect(
@@ -227,13 +240,10 @@ class ViewerIOMixin:
 
     def load_file_dialog(self):
         """Open a file dialog to select and load a CSV file."""
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_dir = os.path.join(app_dir, "CSV")
-        os.makedirs(csv_dir, exist_ok=True)
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select CSV Data Stream",
-            csv_dir,
+            str(ensure_directory(CSV_DIR)),
             "CSV Files (*.csv);;All Files (*)",
         )
         if not file_path:
@@ -242,8 +252,7 @@ class ViewerIOMixin:
 
     def load_urdf_dialog(self):
         """Scan for URDF files and show a selection dialog."""
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        self._robot_descriptors = discover_robot_descriptors(app_dir)
+        self._robot_descriptors = discover_robot_descriptors(str(PACKAGE_DIR))
         if not self._robot_descriptors:
             QMessageBox.information(
                 self,
@@ -277,13 +286,12 @@ class ViewerIOMixin:
     def load_urdf(self, file_path):
         """Load a URDF robot model and add its meshes to the scene."""
         if not os.path.exists(file_path):
+            logger.error("URDF file not found: %s", file_path)
             self.lbl_status.setText("URDF file not found.")
             return
 
         ticket = self._begin_job("robot_load", f"Loading Robot: {os.path.basename(file_path)}...")
-        self._robot_ticket = ticket
-        simulator_cls = type(self.robot_sim)
-        self._robot_thread = RobotLoadThread(simulator_cls, file_path)
+        self._robot_thread = RobotLoadThread(self.robot_simulator_cls, file_path)
         self._robot_thread.finished_signal.connect(
             lambda success, simulator, robot_display, error, tk=ticket, fpath=file_path:
                 self._on_robot_load_finished(tk, fpath, success, simulator, robot_display, error)
@@ -296,6 +304,7 @@ class ViewerIOMixin:
         self._end_job(ticket)
 
         if not success:
+            logger.error("Robot load failed for %s: %s", file_path, error)
             QMessageBox.critical(self, "Error Loading Robot", f"Failed to load URDF:\n{error}")
             self.lbl_status.setText("Robot load failed.")
             self._restore_interaction_state()
@@ -327,12 +336,12 @@ class ViewerIOMixin:
     def load_file(self, file_path):
         """Start asynchronous loading of a CSV trajectory file."""
         if not os.path.exists(file_path):
+            logger.error("CSV file not found: %s", file_path)
             self.lbl_status.setText("Last saved file not found.")
             return
 
         self.last_file_path = file_path
         ticket = self._begin_job("load", f"Loading {os.path.basename(file_path)}...")
-        self._load_ticket = ticket
 
         self.loader_thread = DataLoaderThread(file_path)
         self.loader_thread.finished_signal.connect(
@@ -356,6 +365,7 @@ class ViewerIOMixin:
         if not self.task_controller.is_current(ticket):
             return
         self._end_job(ticket)
+        logger.error("CSV load failed: %s", err_msg)
         QMessageBox.critical(self, "Error Loading File", err_msg)
         self.lbl_status.setText("Load failed.")
 

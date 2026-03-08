@@ -1,6 +1,10 @@
 import numpy as np
 
-from trajectory_schema import COLOR_PRINT
+from .error_reporting import get_logger
+from .trajectory_schema import COLOR_PRINT
+
+
+logger = get_logger(__name__)
 
 
 class TrajectoryRenderer:
@@ -158,6 +162,7 @@ class TrajectoryRenderer:
             self._print_tube_mesh = self._print_line_mesh.tube(radius=self._thickness / 2.0, n_sides=8)
             self._tube_supports_segment_filter = "segment_idx" in self._print_tube_mesh.cell_data
         except Exception:
+            logger.exception("Failed to build cached tube mesh; falling back to per-frame extraction")
             self._print_tube_mesh = None
             self._tube_supports_segment_filter = False
 
@@ -182,6 +187,7 @@ class TrajectoryRenderer:
         try:
             return mesh.tube(radius=self._thickness / 2.0, n_sides=8)
         except Exception:
+            logger.exception("Failed to build print tube subset; falling back to line mesh")
             return mesh
 
     def _extract_travel_subset(self, travel_idx, sub_points):

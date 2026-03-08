@@ -3,8 +3,12 @@ from PyQt6.QtCore import QThread, pyqtSignal, QRectF
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QWidget
 
-from trajectory_schema import load_trajectory_csv
-from trajectory_test_lib import TrajectoryTestConfig, run_trajectory_test_parallel
+from .error_reporting import get_logger
+from .trajectory_schema import load_trajectory_csv
+from .trajectory_test_lib import TrajectoryTestConfig, run_trajectory_test_parallel
+
+
+logger = get_logger(__name__)
 
 
 class ColorStripWidget(QWidget):
@@ -55,7 +59,8 @@ class ColorStripWidget(QWidget):
 class TrajectoryTestThread(QThread):
     """Background thread that runs trajectory testing via trajectory_test_lib."""
 
-    progress_signal = pyqtSignal(int, int)
+    progress_signal = pyqtSignal(object)
+    error_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(object)
 
     def __init__(self, points_xyz, orientations_abc, robot_sim, base_params, tool_params, seed_templates):
@@ -84,11 +89,11 @@ class TrajectoryTestThread(QThread):
                 self.points_xyz,
                 self.orientations_abc,
                 config,
-                progress_callback=lambda current, total: self.progress_signal.emit(current, total),
+                progress_callback=self.progress_signal.emit,
             )
         except Exception as exc:
-            print(f"Trajectory test error: {exc}")
-            self.finished_signal.emit(None)
+            logger.exception("Trajectory test worker failed")
+            self.error_signal.emit(str(exc))
             return
 
         self.finished_signal.emit(statuses)
@@ -117,6 +122,7 @@ class DataLoaderThread(QThread):
                 data.estimated_weight_g,
             )
         except Exception as exc:
+            logger.exception("CSV loader thread failed for %s", self.file_path)
             self.error_signal.emit(str(exc))
 
 
@@ -136,4 +142,5 @@ class ImporterThread(QThread):
             self.importer_module.run_import(self.input_path, self.output_csv)
             self.finished_signal.emit(True, self.output_csv)
         except Exception as exc:
+            logger.exception("Importer thread failed for %s", self.input_path)
             self.finished_signal.emit(False, str(exc))

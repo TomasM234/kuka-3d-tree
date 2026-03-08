@@ -1,16 +1,9 @@
-import os
-import sys
 import unittest
 
 import numpy as np
 
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from trajectory_render import TrajectoryRenderer
-from trajectory_schema import COLOR_PRINT, COLOR_TRAVEL
+from ROOT.trajectory_render import TrajectoryRenderer
+from ROOT.trajectory_schema import COLOR_PRINT, COLOR_TRAVEL
 
 
 class FakeMesh:

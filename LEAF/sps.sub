@@ -78,20 +78,11 @@ END
 
 
 DEF CncSpsInit( )
-  CNC_CMD_NONE = 0
-  CNC_CMD_OPEN = 1
-  CNC_CMD_CLOSE = 2
-  CNC_CMD_RESET = 3
-
   CNC_STATE = 0
   CNC_STREAM_ACTIVE = FALSE
   CNC_STREAM_EOF = FALSE
   CNC_STREAM_ERROR = FALSE
   CNC_STREAM_ERROR_NO = 0
-
-  CNC_BUF_SIZE = 100
-  CNC_TRG_BUF_SIZE = 200
-  CNC_SPEED_SCALE = 100.0
 
   CNC_WR_IDX = 1
   CNC_RD_IDX = 1
@@ -162,8 +153,6 @@ DEF CncSpsStep( )
   formatHead1[] = "%f %f %f %f %f %f"
   formatHead2[] = "%f %f %d %d"
   formatTail[] = "%d %s"
-
-  CNC_BUF_SIZE = 100
 
   IF CNC_REQ_ID <> CNC_ACK_ID THEN
     reqId = CNC_REQ_ID

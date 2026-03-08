@@ -1,14 +1,7 @@
-import os
-import sys
 import tempfile
 import unittest
 
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from Postprocesor.JedenRadekDvanactSloupcu import process_csv
+from ROOT.Postprocesor.JedenRadekDvanactSloupcu import run_export
 
 
 class PostprocessorTests(unittest.TestCase):
@@ -21,12 +14,12 @@ class PostprocessorTests(unittest.TestCase):
         ])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "input.csv")
-            out_path = os.path.join(tmpdir, "output.txt")
+            src_path = f"{tmpdir}/input.csv"
+            out_path = f"{tmpdir}/output.txt"
             with open(src_path, "w", encoding="utf-8") as f:
                 f.write(csv_payload)
 
-            process_csv(src_path, out_path)
+            run_export(src_path, out_path)
 
             with open(out_path, "r", encoding="ascii") as f:
                 lines = [line.strip() for line in f if line.strip()]

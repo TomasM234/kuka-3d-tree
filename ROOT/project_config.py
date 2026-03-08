@@ -1,6 +1,11 @@
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
+
+from .error_reporting import get_logger
+
+
+logger = get_logger(__name__)
 
 
 DEFAULT_PROJECT_FILENAME = "default.json"
@@ -63,59 +68,27 @@ class ProjectConfig:
         if not isinstance(payload, dict):
             return default
 
-        return cls(
-            print_thickness=_to_float(payload.get("print_thickness"), default.print_thickness),
-            last_file_path=str(payload.get("last_file_path", default.last_file_path) or ""),
-            last_postprocessor=str(payload.get("last_postprocessor", default.last_postprocessor) or ""),
-            last_urdf_path=str(payload.get("last_urdf_path", default.last_urdf_path) or ""),
-            base_x=_to_float(payload.get("base_x"), default.base_x),
-            base_y=_to_float(payload.get("base_y"), default.base_y),
-            base_z=_to_float(payload.get("base_z"), default.base_z),
-            base_a=_to_float(payload.get("base_a"), default.base_a),
-            base_b=_to_float(payload.get("base_b"), default.base_b),
-            base_c=_to_float(payload.get("base_c"), default.base_c),
-            tool_x=_to_float(payload.get("tool_x"), default.tool_x),
-            tool_y=_to_float(payload.get("tool_y"), default.tool_y),
-            tool_z=_to_float(payload.get("tool_z"), default.tool_z),
-            tool_a=_to_float(payload.get("tool_a"), default.tool_a),
-            tool_b=_to_float(payload.get("tool_b"), default.tool_b),
-            tool_c=_to_float(payload.get("tool_c"), default.tool_c),
-            table_x1=_to_float(payload.get("table_x1"), default.table_x1),
-            table_y1=_to_float(payload.get("table_y1"), default.table_y1),
-            table_x2=_to_float(payload.get("table_x2"), default.table_x2),
-            table_y2=_to_float(payload.get("table_y2"), default.table_y2),
-            show_table=_to_bool(payload.get("show_table"), default.show_table),
-            show_robot=_to_bool(payload.get("show_robot"), default.show_robot),
-            ik_config=str(payload.get("ik_config", default.ik_config) or default.ik_config)
-        )
+        values = {}
+        for field in fields(cls):
+            default_value = getattr(default, field.name)
+            raw_value = payload.get(field.name, default_value)
+            if isinstance(default_value, bool):
+                values[field.name] = _to_bool(raw_value, default_value)
+            elif isinstance(default_value, float):
+                values[field.name] = _to_float(raw_value, default_value)
+            elif isinstance(default_value, str):
+                values[field.name] = str(raw_value or default_value)
+            else:
+                values[field.name] = raw_value
+
+        return cls(**values)
 
     def to_dict(self):
         """Return a JSON-serializable dictionary."""
-        return {
-            "print_thickness": self.print_thickness,
-            "last_file_path": self.last_file_path,
-            "last_postprocessor": self.last_postprocessor,
-            "last_urdf_path": self.last_urdf_path,
-            "base_x": self.base_x,
-            "base_y": self.base_y,
-            "base_z": self.base_z,
-            "base_a": self.base_a,
-            "base_b": self.base_b,
-            "base_c": self.base_c,
-            "tool_x": self.tool_x,
-            "tool_y": self.tool_y,
-            "tool_z": self.tool_z,
-            "tool_a": self.tool_a,
-            "tool_b": self.tool_b,
-            "tool_c": self.tool_c,
-            "table_x1": self.table_x1,
-            "table_y1": self.table_y1,
-            "table_x2": self.table_x2,
-            "table_y2": self.table_y2,
-            "show_table": self.show_table,
-            "show_robot": self.show_robot,
-            "ik_config": self.ik_config
-        }
+        return asdict(self)
+
+
+PROJECT_STATE_ATTRS = tuple(field.name for field in fields(ProjectConfig))
 
 
 class ProjectConfigStore:
@@ -165,6 +138,7 @@ class ProjectConfigStore:
                     if isinstance(candidate, str) and candidate.strip():
                         filename = self.normalize_project_filename(candidate)
             except Exception:
+                logger.exception("Failed to load last project metadata from %s", self.meta_file)
                 filename = self.default_project
         return self.project_path(filename)
 
@@ -185,6 +159,7 @@ class ProjectConfigStore:
                 data = json.load(f)
             return ProjectConfig.from_dict(data)
         except Exception:
+            logger.exception("Failed to load project config from %s", project_path)
             return ProjectConfig()
 
     @staticmethod

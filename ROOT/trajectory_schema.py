@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import numpy as np
 
-from pose_math import kuka_base_to_matrix, matrix_to_kuka_abc
+from .pose_math import kuka_base_to_matrix, matrix_to_kuka_abc
 
 
 FEATURE_NAMES = {

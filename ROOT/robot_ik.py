@@ -3,6 +3,11 @@ import numpy as np
 from dataclasses import dataclass
 from enum import IntEnum
 
+from .error_reporting import get_logger
+
+
+logger = get_logger(__name__)
+
 try:
     from ikpy.chain import Chain
     import yourdfpy
@@ -45,8 +50,8 @@ class RobotSimulator:
         """Return True if ikpy and yourdfpy are installed."""
         return Chain is not None and yourdfpy is not None
 
-    def load_robot(self, urdf_path):
-        """Load a URDF robot model for IK/FK and cache its visual meshes."""
+    def load_robot(self, urdf_path, load_meshes=True):
+        """Load a URDF robot model for IK/FK and optionally cache visual meshes."""
         if not self.is_available():
             raise ImportError("Required libraries for robot simulation are not installed (ikpy, yourdfpy, trimesh).")
             
@@ -72,8 +77,10 @@ class RobotSimulator:
         # Build O(1) lookup map for joint limits
         self._joint_map = {j.name: j for j in self.urdf_model.robot.joints}
         
-        # Cache meshes
-        self._cache_meshes(os.path.dirname(urdf_path))
+        if load_meshes:
+            self._cache_meshes(os.path.dirname(urdf_path))
+        else:
+            self.link_meshes.clear()
         
     def _cache_meshes(self, base_dir):
         """Preload all STL/DAE meshes from the URDF to avoid reloading them."""
@@ -114,8 +121,8 @@ class RobotSimulator:
                             if visual.origin is not None:
                                 m.apply_transform(visual.origin)
                             meshes.append(m)
-                        except Exception as e:
-                            print(f"Failed to load mesh {mesh_filename}: {e}")
+                        except Exception:
+                            logger.exception("Failed to load mesh %s", mesh_filename)
                             
             if meshes:
                 if len(meshes) == 1:

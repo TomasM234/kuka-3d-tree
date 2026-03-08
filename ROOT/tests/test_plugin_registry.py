@@ -1,15 +1,9 @@
 import os
-import sys
 import tempfile
 import textwrap
 import unittest
 
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from plugin_registry import discover_python_plugins
+from ROOT.plugin_registry import discover_python_plugins
 
 
 class PluginRegistryTests(unittest.TestCase):
@@ -20,9 +14,14 @@ class PluginRegistryTests(unittest.TestCase):
 
             files = {
                 "__init__.py": "",
+                "helper.py": """
+                    VALUE = "Valid Importer"
+                """,
                 "valid.py": """
+                    from .helper import VALUE
+
                     def get_label():
-                        return "Valid Importer"
+                        return VALUE
 
                     def run_import(input_path, output_csv):
                         return None

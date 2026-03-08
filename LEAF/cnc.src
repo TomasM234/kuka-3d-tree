@@ -9,15 +9,6 @@ GLOBAL DEFFCT INT Init( )
   DECL INT toolNo
   DECL INT baseNo
 
-  CNC_CMD_NONE = 0
-  CNC_CMD_OPEN = 1
-  CNC_CMD_CLOSE = 2
-  CNC_CMD_RESET = 3
-
-  CNC_BUF_SIZE = 100
-  CNC_TRG_BUF_SIZE = 200
-  CNC_SPEED_SCALE = 100.0
-
   toolNo = 8
   baseNo = 8
 
@@ -188,11 +179,6 @@ GLOBAL DEFFCT INT CncClose( )
   DECL INT reqId
   DECL INT rc
 
-  CNC_CMD_NONE = 0
-  CNC_CMD_OPEN = 1
-  CNC_CMD_CLOSE = 2
-  CNC_CMD_RESET = 3
-
   IF (NOT CNC_STREAM_ACTIVE) AND (NOT CNC_FILE_OPEN) AND (CNC_REQ_ID == CNC_ACK_ID) THEN
     CNC_REQ_CMD = CNC_CMD_NONE
     RETURN 0
@@ -209,7 +195,7 @@ GLOBAL DEFFCT INT CncClose( )
   rc = CncWaitAck(reqId, 500)
   IF rc == -1 THEN
     IF CNC_STREAM_ERROR_NO <> 0 THEN
-      MsgNotify("CncOpen failed, msg_no=%1","prg",CNC_STREAM_ERROR_NO)
+      MsgNotify("CncClose failed, msg_no=%1","prg",CNC_STREAM_ERROR_NO)
     ENDIF
     RETURN -1
   ENDIF
@@ -224,15 +210,6 @@ GLOBAL DEFFCT INT CncOpen(fileName[]:IN)
   DECL INT reqId
   DECL INT i
   DECL INT nameLen
-
-  CNC_CMD_NONE = 0
-  CNC_CMD_OPEN = 1
-  CNC_CMD_CLOSE = 2
-  CNC_CMD_RESET = 3
-
-  CNC_BUF_SIZE = 100
-  CNC_TRG_BUF_SIZE = 200
-  CNC_SPEED_SCALE = 100.0
 
   IF CNC_REQ_ID <> CNC_ACK_ID THEN
     rc = CncWaitAck(CNC_REQ_ID, 300)

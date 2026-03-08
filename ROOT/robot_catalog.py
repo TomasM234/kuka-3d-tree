@@ -4,6 +4,11 @@ from dataclasses import dataclass
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from .error_reporting import get_logger
+
+
+logger = get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class RobotDescriptor:
@@ -20,7 +25,7 @@ def robot_name_from_urdf(file_path: str) -> str:
         if name_attr:
             return name_attr
     except Exception:
-        pass
+        logger.exception("Failed to parse URDF name from %s", file_path)
     return fallback
 
 
@@ -73,4 +78,5 @@ class RobotLoadThread(QThread):
             simulator.load_robot(self.file_path)
             self.finished_signal.emit(True, simulator, robot_name_from_urdf(self.file_path), "")
         except Exception as exc:
+            logger.exception("Robot load failed for %s", self.file_path)
             self.finished_signal.emit(False, None, "", str(exc))
