@@ -1,4 +1,5 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,10 +14,12 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
+from .app_paths import APPDATA_DIR
 from .viewer_components import ColorStripWidget
 from .viewer_ik_controller import IK_CONFIGS
 
@@ -31,17 +34,27 @@ class ViewerUiTabsMixin:
         self.main_layout.setSpacing(0)
 
         self._panel_containers = []
+        self._dock_panels = {}
         self._last_dock_widget = None
 
         menubar = self.menuBar()
         self.menu_file = menubar.addMenu("File")
         self.menu_workplace = menubar.addMenu("Workplace")
         self.menu_tools = menubar.addMenu("Tools")
+        self.menu_perspectives = menubar.addMenu("Perspectives")
+
+        self.perspective_toolbar = QToolBar("Perspectives", self)
+        self.perspective_toolbar.setObjectName("perspective_toolbar")
+        self.perspective_toolbar.setMovable(False)
+        self.perspective_toolbar.setFloatable(False)
+        self.perspective_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.perspective_toolbar.setIconSize(QSize(24, 24))
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.perspective_toolbar)
 
     def _register_panel_container(self, container):
         self._panel_containers.append(container)
 
-    def _create_dock_panel(self, title, menu, object_name):
+    def _create_dock_panel(self, panel_key, title, menu, object_name):
         dock = QDockWidget(title, self)
         dock.setObjectName(object_name)
         dock.setAllowedAreas(
@@ -70,12 +83,78 @@ class ViewerUiTabsMixin:
         if self._last_dock_widget is not None:
             self.splitDockWidget(self._last_dock_widget, dock, Qt.Orientation.Vertical)
         self._last_dock_widget = dock
+        self._dock_panels[panel_key] = dock
         self._register_panel_container(container)
 
         toggle_action = dock.toggleViewAction()
         toggle_action.setText(title)
         menu.addAction(toggle_action)
         return layout
+
+    @staticmethod
+    def _build_icon(file_name):
+        icon_path = APPDATA_DIR / file_name
+        if icon_path.exists():
+            return QIcon(str(icon_path))
+        return QIcon()
+
+    def _activate_perspective(self, panel_keys):
+        target = set(panel_keys)
+        for key, dock in self._dock_panels.items():
+            dock.setVisible(key in target)
+
+    def _open_all_panels(self):
+        for dock in self._dock_panels.values():
+            dock.setVisible(True)
+
+    def _close_all_panels(self):
+        for dock in self._dock_panels.values():
+            dock.setVisible(False)
+
+    def _build_perspective_action(self, text, icon_file, callback):
+        action = QAction(self._build_icon(icon_file), text, self)
+        action.triggered.connect(callback)
+        action.setToolTip(text)
+        return action
+
+    def _setup_perspectives(self):
+        perspective_items = [
+            ("Open files", "Open.png", ("project", "open_csv", "import")),
+            ("Export", "Export.png", ("export",)),
+            ("Robot cell", "RobotCell.png", ("table",)),
+            ("Robot setup", "Robot.png", ("robot", "base", "tool")),
+            ("Trajectory tools", "Trajectory.png", ("edit", "test", "actual_position")),
+        ]
+
+        self.menu_perspectives.clear()
+        self.perspective_toolbar.clear()
+
+        for label, icon_name, panel_keys in perspective_items:
+            action = self._build_perspective_action(
+                label,
+                icon_name,
+                lambda _, keys=panel_keys: self._activate_perspective(keys),
+            )
+            self.menu_perspectives.addAction(action)
+            self.perspective_toolbar.addAction(action)
+
+        self.menu_perspectives.addSeparator()
+        self.perspective_toolbar.addSeparator()
+
+        open_all_action = self._build_perspective_action(
+            "Open all panels",
+            "OpenPanels.png",
+            self._open_all_panels,
+        )
+        close_all_action = self._build_perspective_action(
+            "Close all panels",
+            "ClosePanels.png",
+            self._close_all_panels,
+        )
+        self.menu_perspectives.addAction(open_all_action)
+        self.menu_perspectives.addAction(close_all_action)
+        self.perspective_toolbar.addAction(open_all_action)
+        self.perspective_toolbar.addAction(close_all_action)
 
     def _create_spinbox(self, min_val, max_val, suffix, value, callback):
         spin = QDoubleSpinBox()
@@ -86,7 +165,7 @@ class ViewerUiTabsMixin:
         return spin
 
     def _create_general_tab(self):
-        project_layout = self._create_dock_panel("Project", self.menu_file, "dock_project")
+        project_layout = self._create_dock_panel("project", "Project", self.menu_file, "dock_project")
         project_layout.addWidget(QLabel("<b>PROJECT</b>"))
 
         self.lbl_project_name = QLabel("\U0001F4C1 default")
@@ -107,6 +186,7 @@ class ViewerUiTabsMixin:
         project_layout.addStretch()
 
         open_csv_layout = self._create_dock_panel(
+            "open_csv",
             "Open CSV trajectory",
             self.menu_file,
             "dock_open_csv_trajectory",
@@ -154,6 +234,7 @@ class ViewerUiTabsMixin:
         open_csv_layout.addStretch()
 
         import_layout = self._create_dock_panel(
+            "import",
             "Import trajectory",
             self.menu_file,
             "dock_import_trajectory",
@@ -185,7 +266,7 @@ class ViewerUiTabsMixin:
         import_layout.addStretch()
 
     def _create_workplace_tab(self):
-        table_layout = self._create_dock_panel("Table", self.menu_workplace, "dock_table")
+        table_layout = self._create_dock_panel("table", "Table", self.menu_workplace, "dock_table")
         table_layout.addWidget(QLabel("<b>TABLE (Bed)</b>"))
 
         self.check_show_table = QCheckBox("Show Table")
@@ -205,7 +286,7 @@ class ViewerUiTabsMixin:
         table_layout.addLayout(self.table_form)
         table_layout.addStretch()
 
-        robot_layout = self._create_dock_panel("Robot", self.menu_workplace, "dock_robot")
+        robot_layout = self._create_dock_panel("robot", "Robot", self.menu_workplace, "dock_robot")
         robot_layout.addWidget(QLabel("<b>ROBOT</b>"))
 
         self.lbl_robot_name = QLabel("No robot selected.")
@@ -228,7 +309,7 @@ class ViewerUiTabsMixin:
         robot_layout.addWidget(self.combo_ik_config)
         robot_layout.addStretch()
 
-        base_layout = self._create_dock_panel("Base", self.menu_workplace, "dock_base")
+        base_layout = self._create_dock_panel("base", "Base", self.menu_workplace, "dock_base")
         base_layout.addWidget(QLabel("<b>Robot Base Frame</b>"))
 
         self.base_form = QFormLayout()
@@ -250,7 +331,7 @@ class ViewerUiTabsMixin:
         base_layout.addLayout(self.base_form)
         base_layout.addStretch()
 
-        tool_layout = self._create_dock_panel("Tool", self.menu_workplace, "dock_tool")
+        tool_layout = self._create_dock_panel("tool", "Tool", self.menu_workplace, "dock_tool")
         tool_layout.addWidget(QLabel("<b>Robot Tool Frame</b>"))
 
         self.tool_form = QFormLayout()
@@ -274,6 +355,7 @@ class ViewerUiTabsMixin:
 
     def _create_edit_tab(self):
         edit_layout = self._create_dock_panel(
+            "edit",
             "Edit trajectory",
             self.menu_tools,
             "dock_edit_trajectory",
@@ -339,6 +421,7 @@ class ViewerUiTabsMixin:
         edit_layout.addStretch()
 
         test_layout = self._create_dock_panel(
+            "test",
             "Test trajectory",
             self.menu_tools,
             "dock_test_trajectory",
@@ -368,6 +451,7 @@ class ViewerUiTabsMixin:
         test_layout.addStretch()
 
         pose_layout = self._create_dock_panel(
+            "actual_position",
             "Actual robot position",
             self.menu_tools,
             "dock_actual_robot_position",
@@ -391,6 +475,7 @@ class ViewerUiTabsMixin:
 
     def _create_export_tab(self):
         export_layout = self._create_dock_panel(
+            "export",
             "Export trajectory",
             self.menu_file,
             "dock_export_trajectory",
@@ -409,6 +494,7 @@ class ViewerUiTabsMixin:
         export_layout.addWidget(self.btn_export)
 
         self.populate_postprocessors()
+        self._setup_perspectives()
         export_layout.addStretch()
 
     def _create_viewport(self):
