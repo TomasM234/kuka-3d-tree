@@ -4,10 +4,35 @@
 
 # KUKA 3D Print Toolkit
 
-Python tools for trajectory import, simulation, validation, and export, plus
-KRL runtime code for streaming point files to a KUKA controller.
+Python tools for trajectory import, simulation, validation, and export, plus KRL runtime code for streaming point files to a KUKA controller.
 
 Documentation status: March 2026
+
+## What is KUKA.T.R.E.E.?
+
+When 3D printing or milling with KUKA industrial robots, slicers and CAM software generate G-code containing millions of points. However, KUKA Robot Language (KRL) and the KUKA controller environment are not natively designed for such massive data sets. The robot executes programs from a strictly constrained RAM drive (`/R1` via VxWorks), where single files over ~8MB or 32,000 lines will fail to load, making direct execution of large 3D prints impossible.
+
+### The Landscape of Solutions
+
+Several approaches exist to bypass this memory limit:
+- **KUKA.CNC**: Integrates a real CNC kernel to read G-code natively without line limits. **Drawback**: Extremely expensive investment.
+- **Siemens Sinumerik (Run MyRobot)**: Replaces upper-level control with a dedicated CNC hardware unit. **Drawback**: Very expensive and requires complex hardware integration.
+- **OrangeApps PointLoader**: A commercial plugin for streaming massive CAD/CAM files without segmentation. **Drawback**: Paid, proprietary software.
+- **KUKA DirLoader**: Swaps programs from the hard drive to RAM dynamically. **Drawback**: Commercial add-on that still requires chopping up files into small subprograms.
+- **KukaVarProxy**: A free, open-source proxy for writing KUKA variables over TCP/IP. **Drawback**: Unsuitable for 3D printing. Updating points online breaks the robot's motion planner "lookahead", causing it to stammer and stop at every point, destroying continuous extrusion.
+
+### The KUKA.T.R.E.E. Solution
+
+**KUKA.T.R.E.E.** bridges this gap by providing a **free, open-source alternative**. 
+
+It works by explicitly converting G-code to a lightweight TXT schema on the PC. You then transfer this text file directly to the KUKA hard drive. A background KRL script (using the Submit Interpreter, SPS) continuously reads the point data from the hard drive and feeds it into native KRL **ring-buffers**. 
+
+The main robot motion program natively executes these points straight out of the buffer. Because the points are fed ahead of time using native KRL variables, the robot's motion planner maintains its **lookahead**, preserving completely smooth, continuous-path motion while dodging the file limits entirely.
+
+**Who is this for?**
+Researchers, integrators, and enthusiasts working in **Large Area Additive Manufacturing (LAAM)** or robotic milling who want to use standard desktop slicers without purchasing expensive commercial robot CAM software.
+
+*Note on limitations: Due to the ring-buffer architecture, navigating mid-file (e.g., manually jumping to start from halfway through a print) is highly restricted.*
 
 ## Repository Layout
 
@@ -30,9 +55,10 @@ Documentation status: March 2026
 
 - Import slicer G-code and NC G-code into one CSV schema.
 - Visualize the trajectory in PyVista.
-- Load URDF robots and run point-by-point IK.
+- Load URDF robots and run point-by-point IK with continuous state tracking to prevent snapping.
 - Test the full trajectory in parallel and display status by point.
-- Edit the loaded trajectory by planar translation and Z rotation.
+- Edit the loaded trajectory by planar translation and Z rotation using precise absolute and incremental UI controls.
+- Add and configure an Extruder STL model relative to the robot's TCP, and visualize coordinate systems.
 - Export robot-ready text output through postprocessor plugins.
 - Persist project-specific state in `ROOT/Project/*.json`.
 
