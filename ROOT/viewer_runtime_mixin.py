@@ -3,7 +3,9 @@ class ViewerRuntimeMixin:
         self.lbl_status.setText(text)
 
     def _on_busy_changed(self, busy):
-        self.left_panel.setEnabled(not busy)
+        if hasattr(self, "_panel_containers"):
+            for container in self._panel_containers:
+                container.setEnabled(not busy)
         self.h_slider.setEnabled(not busy and self.points_xyz is not None and len(self.points_xyz) > 0)
         self.v_slider.setEnabled(not busy and self.points_xyz is not None and len(self.points_xyz) > 0)
         self.btn_test_traj.setEnabled(

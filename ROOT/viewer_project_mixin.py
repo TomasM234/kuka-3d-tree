@@ -1,5 +1,6 @@
 import os
 
+from PyQt6.QtCore import QByteArray
 from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
 from .error_reporting import get_logger
@@ -10,6 +11,22 @@ logger = get_logger(__name__)
 
 
 class ViewerProjectMixin:
+    def _capture_dock_layout_state(self):
+        state = self.saveState()
+        return bytes(state.toBase64()).decode("ascii")
+
+    def _restore_dock_layout_state(self):
+        if not getattr(self, "_dock_layout_state", ""):
+            return
+        try:
+            state = QByteArray.fromBase64(self._dock_layout_state.encode("ascii"))
+            if state.isEmpty():
+                return
+            if not self.restoreState(state):
+                logger.warning("Dock layout restore returned False.")
+        except Exception:
+            logger.exception("Failed to restore dock layout state")
+
     def _apply_project_config_to_state(self, config):
         """Load project-config values into runtime state attributes."""
         for attr_name in PROJECT_STATE_ATTRS:
@@ -30,17 +47,21 @@ class ViewerProjectMixin:
         """Read viewer_settings.json to determine which project to open."""
         self._project_file = self._project_store.load_last_project_path()
         self._project_name = self._project_store.project_name_from_path(self._project_file)
+        self._dock_layout_state = self._project_store.load_dock_layout_state()
 
     def _save_meta(self):
         """Write the current project name to viewer_settings.json."""
         try:
             self._project_store.save_last_project_path(self._project_file)
+            self._dock_layout_state = self._capture_dock_layout_state()
+            self._project_store.save_dock_layout_state(self._dock_layout_state)
         except Exception:
             logger.exception("Failed to save viewer metadata")
 
     def load_settings(self):
         """Load meta + project settings."""
         self._load_meta()
+        self._restore_dock_layout_state()
         self._load_project(self._project_file)
 
     def _load_project(self, path):

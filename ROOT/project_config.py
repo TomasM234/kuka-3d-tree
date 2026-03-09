@@ -127,28 +127,54 @@ class ProjectConfigStore:
             return []
         return [self.project_path(name) for name in files]
 
+    def _read_meta_payload(self):
+        if not os.path.exists(self.meta_file):
+            return {}
+        try:
+            with open(self.meta_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            logger.exception("Failed to load viewer metadata from %s", self.meta_file)
+        return {}
+
+    def _write_meta_payload(self, payload):
+        with open(self.meta_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=4)
+
     def load_last_project_path(self):
         filename = self.default_project
-        if os.path.exists(self.meta_file):
+        meta = self._read_meta_payload()
+        candidate = meta.get("last_project")
+        if isinstance(candidate, str) and candidate.strip():
             try:
-                with open(self.meta_file, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                if isinstance(meta, dict):
-                    candidate = meta.get("last_project")
-                    if isinstance(candidate, str) and candidate.strip():
-                        filename = self.normalize_project_filename(candidate)
-            except Exception:
-                logger.exception("Failed to load last project metadata from %s", self.meta_file)
+                filename = self.normalize_project_filename(candidate)
+            except ValueError:
                 filename = self.default_project
         return self.project_path(filename)
 
     def save_last_project_path(self, project_path):
+        payload = self._read_meta_payload()
         try:
             filename = self.normalize_project_filename(os.path.basename(project_path))
         except ValueError:
             filename = self.default_project
-        with open(self.meta_file, "w", encoding="utf-8") as f:
-            json.dump({"last_project": filename}, f, indent=4)
+        payload["last_project"] = filename
+        self._write_meta_payload(payload)
+
+    def load_dock_layout_state(self):
+        payload = self._read_meta_payload()
+        dock_state = payload.get("dock_layout_state", "")
+        return dock_state if isinstance(dock_state, str) else ""
+
+    def save_dock_layout_state(self, dock_state):
+        payload = self._read_meta_payload()
+        if isinstance(dock_state, str) and dock_state:
+            payload["dock_layout_state"] = dock_state
+        else:
+            payload.pop("dock_layout_state", None)
+        self._write_meta_payload(payload)
 
     @staticmethod
     def load_project(project_path):
