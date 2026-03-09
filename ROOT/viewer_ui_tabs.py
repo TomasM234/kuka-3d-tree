@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .app_paths import APPDATA_DIR
+from .app_paths import APPDATA_DIR, EXTRUDER_DIR
 from .viewer_components import ColorStripWidget
 from .viewer_ik_controller import IK_CONFIGS
 
@@ -122,6 +122,7 @@ class ViewerUiTabsMixin:
             ("Open files", "Open.png", ("project", "open_csv", "import", "display")),
             ("Export", "Export.png", ("export",)),
             ("Robot cell", "RobotCell.png", ("table",)),
+            ("Extruder", "Extruder.png", ("extruder",)),
             ("Robot setup", "Robot.png", ("robot", "base", "tool")),
             ("Trajectory tools", "Trajectory.png", ("edit", "test", "actual_position")),
         ]
@@ -352,6 +353,19 @@ class ViewerUiTabsMixin:
             self.tool_form.addRow(label, spin)
         tool_layout.addLayout(self.tool_form)
         tool_layout.addStretch()
+
+        extruder_layout = self._create_dock_panel("extruder", "Extruder", self.menu_workplace, "dock_extruder")
+        extruder_layout.addWidget(QLabel("<b>EXTRUDER</b>"))
+        
+        extruder_layout.addWidget(QLabel("Extruder Model:"))
+        self.combo_extruder_stl = QComboBox()
+        self.combo_extruder_stl.addItem("None")
+        if EXTRUDER_DIR.exists() and EXTRUDER_DIR.is_dir():
+            files = [p.name for p in EXTRUDER_DIR.iterdir() if p.name.lower().endswith(".stl")]
+            for f in sorted(files, key=str.lower):
+                self.combo_extruder_stl.addItem(f)
+        extruder_layout.addWidget(self.combo_extruder_stl)
+        extruder_layout.addStretch()
 
     def _create_edit_tab(self):
         edit_layout = self._create_dock_panel(
