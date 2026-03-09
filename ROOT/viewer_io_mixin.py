@@ -319,7 +319,7 @@ class ViewerIOMixin:
         self.robot_actors.clear()
 
         for link_name, mesh in self.robot_sim.link_meshes.items():
-            actor = self.plotter.add_mesh(mesh, color="#c0c0c0", show_edges=True)
+            actor = self.plotter.add_mesh(mesh, color="orange", show_edges=True)
             actor.SetVisibility(self.show_robot)
             self.robot_actors[link_name] = actor
 

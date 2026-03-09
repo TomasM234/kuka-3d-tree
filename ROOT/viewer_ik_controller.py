@@ -199,7 +199,7 @@ class ViewerIkControllerMixin:
                 elif link_name in evaluation.limit_violations:
                     actor.prop.color = "red"
                 else:
-                    actor.prop.color = "#c0c0c0"
+                    actor.prop.color = "orange"
 
             t_extruder = kuka_base_to_matrix(
                 self.extruder_x, self.extruder_y, self.extruder_z,

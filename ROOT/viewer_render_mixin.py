@@ -69,7 +69,7 @@ class ViewerRenderMixin:
         if stl_path.exists():
             try:
                 mesh = pv.read(str(stl_path))
-                self.extruder_actor = self.plotter.add_mesh(mesh, color="#808080", specular=0.5, specular_power=15)
+                self.extruder_actor = self.plotter.add_mesh(mesh, color="lightgray", specular=0.5, specular_power=15)
             except Exception:
                 pass
 
