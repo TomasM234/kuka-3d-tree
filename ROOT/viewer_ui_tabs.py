@@ -48,7 +48,7 @@ class ViewerUiTabsMixin:
         self.perspective_toolbar.setMovable(False)
         self.perspective_toolbar.setFloatable(False)
         self.perspective_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.perspective_toolbar.setIconSize(QSize(24, 24))
+        self.perspective_toolbar.setIconSize(QSize(48, 48))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.perspective_toolbar)
 
     def _register_panel_container(self, container):
@@ -119,7 +119,7 @@ class ViewerUiTabsMixin:
 
     def _setup_perspectives(self):
         perspective_items = [
-            ("Open files", "Open.png", ("project", "open_csv", "import")),
+            ("Open files", "Open.png", ("project", "open_csv", "import", "display")),
             ("Export", "Export.png", ("export",)),
             ("Robot cell", "RobotCell.png", ("table",)),
             ("Robot setup", "Robot.png", ("robot", "base", "tool")),
@@ -206,9 +206,15 @@ class ViewerUiTabsMixin:
 
         self.lbl_print_weight = QLabel("")
         open_csv_layout.addWidget(self.lbl_print_weight)
+        open_csv_layout.addStretch()
 
-        open_csv_layout.addSpacing(8)
-        open_csv_layout.addWidget(QLabel("<b>CAMERA</b>"))
+        display_layout = self._create_dock_panel(
+            "display",
+            "Display settings",
+            self.menu_file,
+            "dock_display_settings",
+        )
+        display_layout.addWidget(QLabel("<b>CAMERA</b>"))
 
         for label, slot in (
             ("Reset View (Iso)", self.view_isometric),
@@ -217,21 +223,21 @@ class ViewerUiTabsMixin:
         ):
             button = QPushButton(label)
             button.clicked.connect(slot)
-            open_csv_layout.addWidget(button)
+            display_layout.addWidget(button)
 
-        open_csv_layout.addSpacing(8)
-        open_csv_layout.addWidget(QLabel("<b>VISUALS</b>"))
+        display_layout.addSpacing(8)
+        display_layout.addWidget(QLabel("<b>VISUALS</b>"))
 
         self.lbl_thickness = QLabel(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
-        open_csv_layout.addWidget(self.lbl_thickness)
+        display_layout.addWidget(self.lbl_thickness)
 
         self.slider_thick = QSlider(Qt.Orientation.Horizontal)
         self.slider_thick.setMinimum(2)
         self.slider_thick.setMaximum(50)
         self.slider_thick.setValue(int(self.print_thickness * 10))
         self.slider_thick.valueChanged.connect(self.on_thickness_changed)
-        open_csv_layout.addWidget(self.slider_thick)
-        open_csv_layout.addStretch()
+        display_layout.addWidget(self.slider_thick)
+        display_layout.addStretch()
 
         import_layout = self._create_dock_panel(
             "import",
@@ -301,12 +307,6 @@ class ViewerUiTabsMixin:
         self.check_show_robot.setChecked(self.show_robot)
         self.check_show_robot.stateChanged.connect(self.on_robot_changed)
         robot_layout.addWidget(self.check_show_robot)
-
-        robot_layout.addWidget(QLabel("<b>IK Start Configuration:</b>"))
-        self.combo_ik_config = QComboBox()
-        self.combo_ik_config.addItems(list(IK_CONFIGS.keys()))
-        self.combo_ik_config.currentTextChanged.connect(self.on_ik_config_changed)
-        robot_layout.addWidget(self.combo_ik_config)
         robot_layout.addStretch()
 
         base_layout = self._create_dock_panel("base", "Base", self.menu_workplace, "dock_base")
@@ -457,6 +457,13 @@ class ViewerUiTabsMixin:
             "dock_actual_robot_position",
         )
         pose_layout.addWidget(QLabel("<b>CURRENT ROBOT POSE</b>"))
+        pose_layout.addSpacing(6)
+        pose_layout.addWidget(QLabel("<b>IK Start Configuration:</b>"))
+        self.combo_ik_config = QComboBox()
+        self.combo_ik_config.addItems(list(IK_CONFIGS.keys()))
+        self.combo_ik_config.currentTextChanged.connect(self.on_ik_config_changed)
+        pose_layout.addWidget(self.combo_ik_config)
+        pose_layout.addSpacing(8)
 
         self.lbl_pose_xyz = QLabel("TCP mm: X:- Y:- Z:-")
         self.lbl_pose_abc = QLabel("TCP deg: A:- B:- C:-")
