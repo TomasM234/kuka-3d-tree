@@ -86,6 +86,8 @@ class ViewerProjectMixin:
         for actor in self.robot_actors.values():
             actor.SetVisibility(self.show_robot)
 
+        self._reload_extruder_mesh()
+
         if self.points_xyz is not None:
             self._request_update()
         else:

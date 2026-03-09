@@ -67,17 +67,12 @@ class ViewerUiTabsMixin:
             QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-
         container = QWidget()
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
-        scroll.setWidget(container)
-        dock.setWidget(scroll)
+        dock.setWidget(container)
 
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         if self._last_dock_widget is not None:
