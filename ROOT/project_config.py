@@ -59,6 +59,14 @@ class ProjectConfig:
     table_y2: float = 650.0
     show_table: bool = True
     show_robot: bool = True
+    extruder_stl: str = "None"
+    show_extruder: bool = True
+    extruder_x: float = 0.0
+    extruder_y: float = 0.0
+    extruder_z: float = 0.0
+    extruder_a: float = 0.0
+    extruder_b: float = 0.0
+    extruder_c: float = 0.0
     ik_config: str = DEFAULT_IK_CONFIG
 
     @classmethod

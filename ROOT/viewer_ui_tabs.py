@@ -364,7 +364,33 @@ class ViewerUiTabsMixin:
             files = [p.name for p in EXTRUDER_DIR.iterdir() if p.name.lower().endswith(".stl")]
             for f in sorted(files, key=str.lower):
                 self.combo_extruder_stl.addItem(f)
+        self.combo_extruder_stl.currentTextChanged.connect(self.on_extruder_changed)
         extruder_layout.addWidget(self.combo_extruder_stl)
+
+        self.check_show_extruder = QCheckBox("Show Extruder")
+        self.check_show_extruder.setChecked(self.show_extruder)
+        self.check_show_extruder.stateChanged.connect(self.on_extruder_changed)
+        extruder_layout.addWidget(self.check_show_extruder)
+        
+        extruder_layout.addWidget(QLabel("<b>Extruder Transform (Rel. to TCP)</b>"))
+        self.extruder_form = QFormLayout()
+        self.spin_extruder_x = self._create_spinbox(-5000, 5000, " mm", self.extruder_x, self.on_transform_changed)
+        self.spin_extruder_y = self._create_spinbox(-5000, 5000, " mm", self.extruder_y, self.on_transform_changed)
+        self.spin_extruder_z = self._create_spinbox(-5000, 5000, " mm", self.extruder_z, self.on_transform_changed)
+        self.spin_extruder_a = self._create_spinbox(-360, 360, " deg", self.extruder_a, self.on_transform_changed)
+        self.spin_extruder_b = self._create_spinbox(-360, 360, " deg", self.extruder_b, self.on_transform_changed)
+        self.spin_extruder_c = self._create_spinbox(-360, 360, " deg", self.extruder_c, self.on_transform_changed)
+        for label, spin in (
+            ("X:", self.spin_extruder_x),
+            ("Y:", self.spin_extruder_y),
+            ("Z:", self.spin_extruder_z),
+            ("A:", self.spin_extruder_a),
+            ("B:", self.spin_extruder_b),
+            ("C:", self.spin_extruder_c),
+        ):
+            self.extruder_form.addRow(label, spin)
+        extruder_layout.addLayout(self.extruder_form)
+
         extruder_layout.addStretch()
 
     def _create_edit_tab(self):

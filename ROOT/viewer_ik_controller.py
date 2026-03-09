@@ -200,6 +200,26 @@ class ViewerIkControllerMixin:
                     actor.prop.color = "red"
                 else:
                     actor.prop.color = "#c0c0c0"
+
+            t_extruder = kuka_base_to_matrix(
+                self.extruder_x, self.extruder_y, self.extruder_z,
+                self.extruder_a, self.extruder_b, self.extruder_c
+            )
+            t_tcp_display = t_base_inv @ t_tcp_target
+            t_extruder_display = t_tcp_display @ t_extruder
+
+            self.tcp_axes_actors = self._draw_axes(t_tcp_display, self.tcp_axes_actors, scale=50.0, shaft_radius=0.08, tip_radius=0.15)
+            
+            if self.show_extruder and self.extruder_stl != "None":
+                self.extruder_axes_actors = self._draw_axes(t_extruder_display, self.extruder_axes_actors, scale=30.0, shaft_radius=0.06, tip_radius=0.12)
+                if hasattr(self, "extruder_actor") and self.extruder_actor is not None:
+                    self.extruder_actor.user_matrix = t_extruder_display
+            else:
+                if self.extruder_axes_actors:
+                    for actor in self.extruder_axes_actors:
+                        self.plotter.remove_actor(actor)
+                    self.extruder_axes_actors.clear()
+
         except Exception:
             logger.exception("IK update failed for current trajectory point")
 

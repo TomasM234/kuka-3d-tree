@@ -23,9 +23,19 @@ TABLE_WIDGET_BINDINGS = (
     ("spin_table_y2", "table_y2"),
 )
 
+EXTRUDER_WIDGET_BINDINGS = (
+    ("spin_extruder_x", "extruder_x"),
+    ("spin_extruder_y", "extruder_y"),
+    ("spin_extruder_z", "extruder_z"),
+    ("spin_extruder_a", "extruder_a"),
+    ("spin_extruder_b", "extruder_b"),
+    ("spin_extruder_c", "extruder_c"),
+)
+
 CHECKBOX_WIDGET_BINDINGS = (
     ("check_show_table", "show_table"),
     ("check_show_robot", "show_robot"),
+    ("check_show_extruder", "show_extruder"),
 )
 
 
@@ -57,12 +67,16 @@ class ViewerStateMixin:
             self.lbl_project_name.setText(f"\U0001F4C1 {self._project_name}")
             self.slider_thick.setValue(int(self.print_thickness * 10))
             self.lbl_thickness.setText(f"Extrusion Width:\n{self.print_thickness:.1f} mm")
-            self._set_widgets_from_state(BASE_WIDGET_BINDINGS + TOOL_WIDGET_BINDINGS + TABLE_WIDGET_BINDINGS)
+            self._set_widgets_from_state(BASE_WIDGET_BINDINGS + TOOL_WIDGET_BINDINGS + TABLE_WIDGET_BINDINGS + EXTRUDER_WIDGET_BINDINGS)
             self._set_checkboxes_from_state(CHECKBOX_WIDGET_BINDINGS)
 
             ik_idx = self.combo_ik_config.findText(self.ik_config)
             if ik_idx >= 0:
                 self.combo_ik_config.setCurrentIndex(ik_idx)
+
+            ext_idx = self.combo_extruder_stl.findText(self.extruder_stl)
+            if ext_idx >= 0:
+                self.combo_extruder_stl.setCurrentIndex(ext_idx)
 
             self._select_plugin_by_file_name(self.combo_postprocessor, self.last_postprocessor)
         finally:
@@ -117,12 +131,23 @@ class ViewerStateMixin:
         self.save_settings()
 
     def on_transform_changed(self):
-        """Handle base/tool transform spinbox changes."""
+        """Handle base/tool/extruder transform spinbox changes."""
         if self.updating_sliders:
             return
-        self._set_state_from_widgets(BASE_WIDGET_BINDINGS + TOOL_WIDGET_BINDINGS)
+        self._set_state_from_widgets(BASE_WIDGET_BINDINGS + TOOL_WIDGET_BINDINGS + EXTRUDER_WIDGET_BINDINGS)
         self.save_settings()
 
+        if self.points_xyz is not None:
+            self._request_update()
+
+    def on_extruder_changed(self):
+        """Handle extruder STL selection or visibility toggle."""
+        if self.updating_sliders:
+            return
+        self.extruder_stl = self.combo_extruder_stl.currentText()
+        self._set_state_from_checkboxes((CHECKBOX_WIDGET_BINDINGS[2],))
+        self.save_settings()
+        self._reload_extruder_mesh()
         if self.points_xyz is not None:
             self._request_update()
 

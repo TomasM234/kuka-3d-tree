@@ -21,5 +21,13 @@
     "table_y2": 2000.0,
     "show_table": true,
     "show_robot": true,
+    "extruder_stl": "CEAD_S25.stl",
+    "show_extruder": true,
+    "extruder_x": -550.0,
+    "extruder_y": -135.0,
+    "extruder_z": -113.0,
+    "extruder_a": -90.0,
+    "extruder_b": -90.0,
+    "extruder_c": 0.0,
     "ik_config": "Elbow Up / Front"
 }

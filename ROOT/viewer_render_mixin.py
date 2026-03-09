@@ -1,5 +1,7 @@
 import os
-
+from .app_paths import EXTRUDER_DIR
+import pyvista as pv
+import numpy as np
 
 class ViewerRenderMixin:
     def setup_scene(self):
@@ -13,6 +15,10 @@ class ViewerRenderMixin:
             arrow = self.pv.Arrow(start=origin, direction=direction, scale=50.0, shaft_radius=0.03, tip_radius=0.08)
             self.plotter.add_mesh(arrow, color=color, show_edges=False)
 
+        self.tcp_axes_actors = []
+        self.extruder_axes_actors = []
+        self.extruder_actor = None
+
         self.view_isometric()
         self.load_settings()
 
@@ -21,6 +27,8 @@ class ViewerRenderMixin:
 
         if self.last_urdf_path and os.path.exists(self.last_urdf_path):
             self.load_urdf(self.last_urdf_path)
+
+        self._reload_extruder_mesh()
 
     def view_isometric(self):
         self.plotter.view_isometric()
@@ -33,6 +41,37 @@ class ViewerRenderMixin:
     def view_side(self):
         self.plotter.view_xz()
         self.plotter.camera.roll = 0
+
+    def _draw_axes(self, transform_matrix, existing_actors=None, scale=100.0, shaft_radius=0.05, tip_radius=0.1):
+        if existing_actors:
+            for actor in existing_actors:
+                self.plotter.remove_actor(actor)
+            existing_actors.clear()
+        
+        actors = []
+        origin = (0.0, 0.0, 0.0)
+        for direction, color in (((1, 0, 0), "red"), ((0, 1, 0), "green"), ((0, 0, 1), "blue")):
+            arrow = self.pv.Arrow(start=origin, direction=direction, scale=scale, shaft_radius=shaft_radius, tip_radius=tip_radius)
+            arrow.transform(transform_matrix)
+            actor = self.plotter.add_mesh(arrow, color=color, show_edges=False)
+            actors.append(actor)
+        return actors
+
+    def _reload_extruder_mesh(self):
+        if hasattr(self, "extruder_actor") and self.extruder_actor:
+            self.plotter.remove_actor(self.extruder_actor)
+            self.extruder_actor = None
+
+        if self.extruder_stl == "None" or not self.show_extruder or not self.show_robot:
+            return
+
+        stl_path = EXTRUDER_DIR / self.extruder_stl
+        if stl_path.exists():
+            try:
+                mesh = pv.read(str(stl_path))
+                self.extruder_actor = self.plotter.add_mesh(mesh, color="#808080", specular=0.5, specular_power=15)
+            except Exception:
+                pass
 
     def on_thickness_changed(self, val):
         if getattr(self, "updating_sliders", False):
