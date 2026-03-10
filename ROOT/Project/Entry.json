@@ -21,7 +21,7 @@
     "table_y2": 2000.0,
     "show_table": true,
     "show_robot": true,
-    "extruder_stl": "CEAD_S25.stl",
+    "extruder_stl": "CEAD_S25_low_poly.stl",
     "show_extruder": true,
     "extruder_x": -550.0,
     "extruder_y": -135.0,

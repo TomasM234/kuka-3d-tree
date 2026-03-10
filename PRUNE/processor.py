@@ -62,6 +62,37 @@ def apply_convex_hull(mesh: pv.PolyData) -> pv.PolyData:
     hull_pv = pv.PolyData(hull_tm.vertices, pv_faces)
     return hull_pv
 
+def apply_voxel_shrinkwrap(mesh: pv.PolyData, pitch: float) -> pv.PolyData:
+    """
+    Wraps the mesh tightly while preserving large concavities. 
+    It voxelizes the mesh, closes small holes via morphology, and extracts the surface.
+    """
+    # 1. Convert to trimesh
+    tm_mesh = trimesh.Trimesh(vertices=mesh.points, faces=mesh.faces.reshape(-1, 4)[:, 1:])
+    
+    # 2. Voxelize
+    voxels = tm_mesh.voxelized(pitch=pitch)
+    solid_voxels = voxels.fill()
+    
+    # 3. Morphological closing to seal small tears
+    import scipy.ndimage as nd
+    matrix = solid_voxels.matrix
+    struct = nd.generate_binary_structure(3, 3) 
+    dilated = nd.binary_dilation(matrix, structure=struct, iterations=2)
+    eroded = nd.binary_erosion(dilated, structure=struct, iterations=2)
+    
+    # 4. Extract surface via marching cubes
+    new_voxels = trimesh.voxel.VoxelGrid(eroded, solid_voxels.transform)
+    wrap_mesh = new_voxels.marching_cubes
+    
+    # 5. Convert back to PyVista
+    n_faces = len(wrap_mesh.faces)
+    import numpy as np
+    padding = np.full((n_faces, 1), 3, dtype=np.int64)
+    pv_faces = np.hstack((padding, wrap_mesh.faces)).flatten()
+    
+    return pv.PolyData(wrap_mesh.vertices, pv_faces)
+
 def _load_step_via_gmsh(file_path: str) -> pv.PolyData:
     """
     Loads a STEP file using the gmsh python API,

@@ -45,6 +45,10 @@ Researchers, integrators, and enthusiasts working in **Large Area Additive Manuf
   - `Importer/parse_nc.py`: NC G-code with `M3/M5/S` extrusion to universal CSV
   - `Postprocesor/`: production postprocessors used by the viewer export tab
   - `tools/`: development and one-off utility scripts
+- `PRUNE/`
+  - `__main__.py`: main application launcher
+  - `ui_main.py`: PyQt6 graphical user interface
+  - `processor.py`: backend CAD logic for loading (Gmsh) and meshing (PyVista/Trimesh)
 - `LEAF/`
   - `cnc.dat`: shared data structures and global constants
   - `cnc.src`: stream control and motion helpers
@@ -61,6 +65,16 @@ Researchers, integrators, and enthusiasts working in **Large Area Additive Manuf
 - Add and configure an Extruder STL model relative to the robot's TCP, and visualize coordinate systems.
 - Export robot-ready text output through postprocessor plugins.
 - Persist project-specific state in `ROOT/Project/*.json`.
+
+## PRUNE Capabilities
+
+**PRUNE** (Polygonal Reduction Utility for Network Envelopes) is a standalone prep-tool within the toolkit used to simplify engineering CAD models prior to simulation.
+
+- Load raw CAD models (`.stp`, `.step`) automatically triangulating them to 2D surface meshes via Gmsh.
+- Load standard mesh formats natively (`.stl`, `.obj`).
+- **Decimation**: Reduce the polygon count of heavy models by a slider-controlled percentage to improve rendering performance.
+- **Convex Hull**: Generate a safe "shrink-wrap" collision envelope around complex assemblies using Trimesh.
+- Export the lightweight processed models directly to `.stl` for use as Extruder shapes or obstacles in the ROOT viewer.
 
 ## Universal CSV Format
 
@@ -100,7 +114,7 @@ Run commands from the repository root.
 Install dependencies:
 
 ```bash
-pip install PyQt6 numpy pyvista pyvistaqt ikpy yourdfpy trimesh
+pip install PyQt6 numpy pyvista pyvistaqt ikpy yourdfpy trimesh gmsh scipy
 ```
 
 Convert slicer G-code:
@@ -119,6 +133,12 @@ Launch the viewer:
 
 ```bash
 python -m ROOT
+```
+
+Launch the CAD processor:
+
+```bash
+python -m PRUNE
 ```
 
 ## Quick Start: KRL

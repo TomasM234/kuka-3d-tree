@@ -136,6 +136,21 @@ class PruneMainWindow(QMainWindow):
         self.btn_convex_hull.setEnabled(False)
         self.tools_layout.addWidget(self.btn_convex_hull)
         
+        self.tools_layout.addSpacing(5)
+        
+        wrap_layout = QHBoxLayout()
+        wrap_layout.addWidget(QLabel("Pitch (mm):"))
+        self.spin_voxel_pitch = QSpinBox()
+        self.spin_voxel_pitch.setRange(1, 100)
+        self.spin_voxel_pitch.setValue(5)
+        wrap_layout.addWidget(self.spin_voxel_pitch)
+        self.tools_layout.addLayout(wrap_layout)
+        
+        self.btn_shrinkwrap = QPushButton("Morphological Shrinkwrap")
+        self.btn_shrinkwrap.clicked.connect(self.on_shrinkwrap)
+        self.btn_shrinkwrap.setEnabled(False)
+        self.tools_layout.addWidget(self.btn_shrinkwrap)
+        
         self.tools_layout.addSpacing(15)
         
         # 4. View controls
@@ -208,6 +223,7 @@ class PruneMainWindow(QMainWindow):
             self.btn_export.setEnabled(True)
             self.btn_decimate.setEnabled(True)
             self.btn_convex_hull.setEnabled(True)
+            self.btn_shrinkwrap.setEnabled(True)
             self.btn_reset_mesh.setEnabled(True)
             
         except Exception as e:
@@ -257,6 +273,21 @@ class PruneMainWindow(QMainWindow):
         except Exception as e:
             logger.exception("Convex Hull failed.")
             QMessageBox.critical(self, "Convex Hull Error", f"Failed to generate convex hull:\n{e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def on_shrinkwrap(self):
+        if self.current_mesh is None:
+            return
+            
+        pitch = self.spin_voxel_pitch.value()
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self.current_mesh = processor.apply_voxel_shrinkwrap(self.current_mesh, pitch)
+            self._update_plot()
+        except Exception as e:
+            logger.exception("Shrinkwrap failed.")
+            QMessageBox.critical(self, "Shrinkwrap Error", f"Failed to generate shrinkwrap envelope:\n{e}")
         finally:
             QApplication.restoreOverrideCursor()
 
