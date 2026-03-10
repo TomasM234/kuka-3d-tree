@@ -2,7 +2,9 @@ import logging
 from pathlib import Path
 
 import pyvista as pv
+import pyvista as pv
 import trimesh
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,6 @@ def apply_convex_hull(mesh: pv.PolyData) -> pv.PolyData:
     # Convert back to pyvista
     n_faces = len(hull_tm.faces)
     # Pyvista needs faces formatted as [n_points_in_face, p1, p2, p3, ...]
-    import numpy as np
     padding = np.full((n_faces, 1), 3, dtype=np.int64)
     pv_faces = np.hstack((padding, hull_tm.faces)).flatten()
     
@@ -77,21 +78,27 @@ def apply_voxel_shrinkwrap(mesh: pv.PolyData, pitch: float) -> pv.PolyData:
     # 3. Morphological closing to seal small tears
     import scipy.ndimage as nd
     matrix = solid_voxels.matrix
+    
+    # Pad matrix to ensure the mesh has a closed surface and doesn't crash on solid chunks
+    padded = np.pad(matrix, 1, mode='constant', constant_values=False)
+    
     struct = nd.generate_binary_structure(3, 3) 
-    dilated = nd.binary_dilation(matrix, structure=struct, iterations=2)
+    dilated = nd.binary_dilation(padded, structure=struct, iterations=2)
     eroded = nd.binary_erosion(dilated, structure=struct, iterations=2)
     
     # 4. Extract surface via marching cubes
-    new_voxels = trimesh.voxel.VoxelGrid(eroded, solid_voxels.transform)
-    wrap_mesh = new_voxels.marching_cubes
+    import skimage.measure as measure
+    v, f, n, _ = measure.marching_cubes(eroded, level=0.5)
+    
+    # Translate vertices from padded voxel indices back to world coordinates
+    v = (v - 1.0) * pitch + solid_voxels.transform[:3, 3]
     
     # 5. Convert back to PyVista
-    n_faces = len(wrap_mesh.faces)
-    import numpy as np
-    padding = np.full((n_faces, 1), 3, dtype=np.int64)
-    pv_faces = np.hstack((padding, wrap_mesh.faces)).flatten()
+    n_faces = len(f)
+    padding_arr = np.full((n_faces, 1), 3, dtype=np.int64)
+    pv_faces = np.hstack((padding_arr, f)).flatten()
     
-    return pv.PolyData(wrap_mesh.vertices, pv_faces)
+    return pv.PolyData(v, pv_faces)
 
 def _load_step_via_gmsh(file_path: str) -> pv.PolyData:
     """
@@ -100,7 +107,6 @@ def _load_step_via_gmsh(file_path: str) -> pv.PolyData:
     import gmsh is deferred so it doesn't fail if gmsh is not installed yet.
     """
     import gmsh
-    import numpy as np
     
     gmsh.initialize()
     # Don't print output to terminal

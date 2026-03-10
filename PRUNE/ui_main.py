@@ -48,6 +48,7 @@ class PruneMainWindow(QMainWindow):
         self.current_mesh: pv.PolyData | None = None
         self.original_mesh: pv.PolyData | None = None
         self.mesh_actor = None
+        self.original_actor = None
         self.mesh_color = "lightblue"
         
         # Processor module instances will be called here
@@ -151,6 +152,21 @@ class PruneMainWindow(QMainWindow):
         self.btn_shrinkwrap.setEnabled(False)
         self.tools_layout.addWidget(self.btn_shrinkwrap)
         
+        self.check_show_original = QCheckBox("Show Original Mesh (Gray)")
+        self.check_show_original.setChecked(True)
+        self.check_show_original.stateChanged.connect(self._update_plot)
+        self.tools_layout.addWidget(self.check_show_original)
+        
+        opacity_layout = QHBoxLayout()
+        self.lbl_opacity = QLabel("Envelope Opacity: 50%")
+        opacity_layout.addWidget(self.lbl_opacity)
+        self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_opacity.setRange(10, 100)
+        self.slider_opacity.setValue(50)
+        self.slider_opacity.valueChanged.connect(self.on_opacity_change)
+        opacity_layout.addWidget(self.slider_opacity)
+        self.tools_layout.addLayout(opacity_layout)
+        
         self.tools_layout.addSpacing(15)
         
         # 4. View controls
@@ -180,21 +196,37 @@ class PruneMainWindow(QMainWindow):
         self.plotter.set_background("white")
         self.plotter.reset_camera()
 
+    def on_opacity_change(self, value):
+        self.lbl_opacity.setText(f"Envelope Opacity: {value}%")
+        self._update_plot()
+
     def _update_plot(self):
         """Redraws the mesh in the pyvista plotter according to current state."""
         if self.mesh_actor:
             self.plotter.remove_actor(self.mesh_actor)
             self.mesh_actor = None
             
+        if self.original_actor:
+            self.plotter.remove_actor(self.original_actor)
+            self.original_actor = None
+            
+        if self.original_mesh is not None and self.check_show_original.isChecked():
+            self.original_actor = self.plotter.add_mesh(
+                self.original_mesh, 
+                color="gray", 
+                show_edges=False,
+                opacity=1.0,
+            )
+            
         if self.current_mesh is not None:
+            opacity = self.slider_opacity.value() / 100.0
             self.mesh_actor = self.plotter.add_mesh(
                 self.current_mesh, 
                 color=self.mesh_color, 
                 show_edges=self.check_show_edges.isChecked(),
                 edge_color="black",
-                opacity=1.0,
+                opacity=opacity,
             )
-            self.plotter.reset_camera()
 
         self._update_stats()
 
@@ -218,6 +250,7 @@ class PruneMainWindow(QMainWindow):
             self.original_mesh = mesh.copy()
             self.current_mesh = mesh.copy()
             self._update_plot()
+            self.plotter.reset_camera()
             
             # Enable buttons
             self.btn_export.setEnabled(True)
@@ -295,3 +328,4 @@ class PruneMainWindow(QMainWindow):
         if self.original_mesh is not None:
             self.current_mesh = self.original_mesh.copy()
             self._update_plot()
+            self.plotter.reset_camera()
