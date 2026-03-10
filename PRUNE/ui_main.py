@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
     __package__ = "PRUNE"
 
 from pyvistaqt import QtInteractor
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,6 +36,26 @@ from PRUNE import processor
 logger = logging.getLogger(__name__)
 
 
+class ProcessorWorker(QThread):
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            result = self.func(*self.args, **self.kwargs)
+            self.finished.emit(result)
+        except Exception as e:
+            import traceback
+            logger.error("Worker error:\n" + traceback.format_exc())
+            self.error.emit(str(e))
+
+
 class PruneMainWindow(QMainWindow):
     """Main window for the PRUNE CAD processor application."""
 
@@ -50,6 +70,7 @@ class PruneMainWindow(QMainWindow):
         self.mesh_actor = None
         self.original_actor = None
         self.mesh_color = "lightblue"
+        self.worker = None
         
         # Processor module instances will be called here
         
@@ -202,31 +223,40 @@ class PruneMainWindow(QMainWindow):
 
     def _update_plot(self):
         """Redraws the mesh in the pyvista plotter according to current state."""
-        if self.mesh_actor:
-            self.plotter.remove_actor(self.mesh_actor)
-            self.mesh_actor = None
+        show_orig = self.check_show_original.isChecked()
+        if self.original_mesh is not None and show_orig:
+            if self.original_actor is None:
+                self.original_actor = self.plotter.add_mesh(
+                    self.original_mesh, 
+                    color="gray", 
+                    show_edges=False,
+                    opacity=1.0,
+                )
+            else:
+                self.original_actor.SetVisibility(True)
+        elif self.original_actor is not None:
+            self.original_actor.SetVisibility(False)
             
-        if self.original_actor:
-            self.plotter.remove_actor(self.original_actor)
-            self.original_actor = None
-            
-        if self.original_mesh is not None and self.check_show_original.isChecked():
-            self.original_actor = self.plotter.add_mesh(
-                self.original_mesh, 
-                color="gray", 
-                show_edges=False,
-                opacity=1.0,
-            )
-            
+        # Handle Current Mesh
         if self.current_mesh is not None:
             opacity = self.slider_opacity.value() / 100.0
-            self.mesh_actor = self.plotter.add_mesh(
-                self.current_mesh, 
-                color=self.mesh_color, 
-                show_edges=self.check_show_edges.isChecked(),
-                edge_color="black",
-                opacity=opacity,
-            )
+            show_edges = self.check_show_edges.isChecked()
+            
+            if self.mesh_actor is None:
+                self.mesh_actor = self.plotter.add_mesh(
+                    self.current_mesh, 
+                    color=self.mesh_color, 
+                    show_edges=show_edges,
+                    edge_color="black",
+                    opacity=opacity,
+                )
+            else:
+                self.mesh_actor.mapper.dataset.copy_from(self.current_mesh)
+                self.mesh_actor.prop.show_edges = show_edges
+                self.mesh_actor.prop.opacity = opacity
+        elif self.mesh_actor is not None:
+            self.plotter.remove_actor(self.mesh_actor)
+            self.mesh_actor = None
 
         self._update_stats()
 
@@ -238,6 +268,33 @@ class PruneMainWindow(QMainWindow):
             n_cells = self.current_mesh.n_cells
             self.lbl_file_info.setText(f"Current Mesh:\nVertices: {n_points:,}\nTriangles: {n_cells:,}")
 
+    def _run_in_background(self, func, *args, success_callback=None, error_context="Processing Error", **kwargs):
+        if self.worker is not None and self.worker.isRunning():
+            return
+            
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.dock_tools.setEnabled(False)
+        
+        self.worker = ProcessorWorker(func, *args, **kwargs)
+        
+        if success_callback:
+            self.worker.finished.connect(success_callback)
+            
+        self.worker.error.connect(lambda e: self._handle_worker_error(e, error_context))
+        
+        self.worker.finished.connect(self._cleanup_worker)
+        self.worker.error.connect(self._cleanup_worker)
+        
+        self.worker.start()
+
+    def _cleanup_worker(self, _=None):
+        self.dock_tools.setEnabled(True)
+        QApplication.restoreOverrideCursor()
+        self.worker = None
+
+    def _handle_worker_error(self, error_msg, context):
+        QMessageBox.critical(self, context, f"{context}:\n{error_msg}")
+
     def on_open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Open CAD/Mesh File", "", "Supported Files (*.stl *.obj *.stp *.step);;All Files (*.*)"
@@ -245,8 +302,7 @@ class PruneMainWindow(QMainWindow):
         if not file_path:
             return
             
-        try:
-            mesh = processor.load_mesh(file_path)
+        def on_success(mesh):
             self.original_mesh = mesh.copy()
             self.current_mesh = mesh.copy()
             self._update_plot()
@@ -259,9 +315,11 @@ class PruneMainWindow(QMainWindow):
             self.btn_shrinkwrap.setEnabled(True)
             self.btn_reset_mesh.setEnabled(True)
             
-        except Exception as e:
-            logger.exception("Failed to load file.")
-            QMessageBox.critical(self, "Error Loading File", f"Could not load {file_path}:\n{e}")
+        self._run_in_background(
+            processor.load_mesh, file_path, 
+            success_callback=on_success, 
+            error_context="Error Loading File"
+        )
 
     def on_export_file(self):
         if self.current_mesh is None:
@@ -285,44 +343,46 @@ class PruneMainWindow(QMainWindow):
             return
         
         reduction = self.slider_decimate.value() / 100.0
-        try:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            self.current_mesh = processor.apply_decimation(self.current_mesh, reduction)
+        
+        def on_success(mesh):
+            self.current_mesh = mesh
             self._update_plot()
-        except Exception as e:
-            logger.exception("Decimation failed.")
-            QMessageBox.critical(self, "Decimation Error", f"Failed to decimate mesh:\n{e}")
-        finally:
-            QApplication.restoreOverrideCursor()
+            
+        self._run_in_background(
+            processor.apply_decimation, self.current_mesh, reduction,
+            success_callback=on_success,
+            error_context="Decimation Error"
+        )
 
     def on_convex_hull(self):
         if self.current_mesh is None:
             return
             
-        try:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            self.current_mesh = processor.apply_convex_hull(self.current_mesh)
+        def on_success(mesh):
+            self.current_mesh = mesh
             self._update_plot()
-        except Exception as e:
-            logger.exception("Convex Hull failed.")
-            QMessageBox.critical(self, "Convex Hull Error", f"Failed to generate convex hull:\n{e}")
-        finally:
-            QApplication.restoreOverrideCursor()
+            
+        self._run_in_background(
+            processor.apply_convex_hull, self.current_mesh,
+            success_callback=on_success,
+            error_context="Convex Hull Error"
+        )
 
     def on_shrinkwrap(self):
         if self.current_mesh is None:
             return
             
         pitch = self.spin_voxel_pitch.value()
-        try:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            self.current_mesh = processor.apply_voxel_shrinkwrap(self.current_mesh, pitch)
+        
+        def on_success(mesh):
+            self.current_mesh = mesh
             self._update_plot()
-        except Exception as e:
-            logger.exception("Shrinkwrap failed.")
-            QMessageBox.critical(self, "Shrinkwrap Error", f"Failed to generate shrinkwrap envelope:\n{e}")
-        finally:
-            QApplication.restoreOverrideCursor()
+            
+        self._run_in_background(
+            processor.apply_voxel_shrinkwrap, self.current_mesh, pitch,
+            success_callback=on_success,
+            error_context="Shrinkwrap Error"
+        )
 
     def on_reset_mesh(self):
         if self.original_mesh is not None:

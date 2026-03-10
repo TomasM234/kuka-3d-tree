@@ -5,6 +5,8 @@ import pyvista as pv
 import pyvista as pv
 import trimesh
 import numpy as np
+import scipy.ndimage as nd
+import skimage.measure as measure
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +78,6 @@ def apply_voxel_shrinkwrap(mesh: pv.PolyData, pitch: float) -> pv.PolyData:
     solid_voxels = voxels.fill()
     
     # 3. Morphological closing to seal small tears
-    import scipy.ndimage as nd
     matrix = solid_voxels.matrix
     
     # Pad matrix to ensure the mesh has a closed surface and doesn't crash on solid chunks
@@ -87,7 +88,6 @@ def apply_voxel_shrinkwrap(mesh: pv.PolyData, pitch: float) -> pv.PolyData:
     eroded = nd.binary_erosion(dilated, structure=struct, iterations=2)
     
     # 4. Extract surface via marching cubes
-    import skimage.measure as measure
     v, f, n, _ = measure.marching_cubes(eroded, level=0.5)
     
     # Translate vertices from padded voxel indices back to world coordinates
