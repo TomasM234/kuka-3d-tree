@@ -158,6 +158,11 @@ class PruneMainWindow(QMainWindow):
         self.btn_convex_hull.setEnabled(False)
         self.tools_layout.addWidget(self.btn_convex_hull)
         
+        self.btn_coacd = QPushButton("CoACD Convex Decomposition")
+        self.btn_coacd.clicked.connect(self.on_coacd)
+        self.btn_coacd.setEnabled(False)
+        self.tools_layout.addWidget(self.btn_coacd)
+        
         self.tools_layout.addSpacing(5)
         
         wrap_layout = QHBoxLayout()
@@ -172,6 +177,19 @@ class PruneMainWindow(QMainWindow):
         self.btn_shrinkwrap.clicked.connect(self.on_shrinkwrap)
         self.btn_shrinkwrap.setEnabled(False)
         self.tools_layout.addWidget(self.btn_shrinkwrap)
+        
+        offset_layout = QHBoxLayout()
+        offset_layout.addWidget(QLabel("Offset (mm):"))
+        self.spin_offset_dist = QSpinBox()
+        self.spin_offset_dist.setRange(1, 100)
+        self.spin_offset_dist.setValue(2)
+        offset_layout.addWidget(self.spin_offset_dist)
+        self.tools_layout.addLayout(offset_layout)
+        
+        self.btn_offset = QPushButton("Generate Safety Offset")
+        self.btn_offset.clicked.connect(self.on_offset)
+        self.btn_offset.setEnabled(False)
+        self.tools_layout.addWidget(self.btn_offset)
         
         self.check_show_original = QCheckBox("Show Original Mesh (Gray)")
         self.check_show_original.setChecked(True)
@@ -196,6 +214,11 @@ class PruneMainWindow(QMainWindow):
         self.btn_reset_mesh.clicked.connect(self.on_reset_mesh)
         self.btn_reset_mesh.setEnabled(False)
         self.tools_layout.addWidget(self.btn_reset_mesh)
+        
+        self.btn_repair = QPushButton("Repair Mesh (Sanitize)")
+        self.btn_repair.clicked.connect(self.on_repair)
+        self.btn_repair.setEnabled(False)
+        self.tools_layout.addWidget(self.btn_repair)
         
         self.check_show_edges = QCheckBox("Show Mesh Edges (Wireframe)")
         self.check_show_edges.setChecked(False)
@@ -223,40 +246,36 @@ class PruneMainWindow(QMainWindow):
 
     def _update_plot(self):
         """Redraws the mesh in the pyvista plotter according to current state."""
+        if self.original_actor is not None:
+            self.plotter.remove_actor(self.original_actor)
+            self.original_actor = None
+            
         show_orig = self.check_show_original.isChecked()
         if self.original_mesh is not None and show_orig:
-            if self.original_actor is None:
-                self.original_actor = self.plotter.add_mesh(
-                    self.original_mesh, 
-                    color="gray", 
-                    show_edges=False,
-                    opacity=1.0,
-                )
-            else:
-                self.original_actor.SetVisibility(True)
-        elif self.original_actor is not None:
-            self.original_actor.SetVisibility(False)
+            self.original_actor = self.plotter.add_mesh(
+                self.original_mesh, 
+                color="gray", 
+                show_edges=False,
+                opacity=1.0,
+            )
+            self.original_actor.SetVisibility(True)
+            
+        if self.mesh_actor is not None:
+            self.plotter.remove_actor(self.mesh_actor)
+            self.mesh_actor = None
             
         # Handle Current Mesh
         if self.current_mesh is not None:
             opacity = self.slider_opacity.value() / 100.0
             show_edges = self.check_show_edges.isChecked()
             
-            if self.mesh_actor is None:
-                self.mesh_actor = self.plotter.add_mesh(
-                    self.current_mesh, 
-                    color=self.mesh_color, 
-                    show_edges=show_edges,
-                    edge_color="black",
-                    opacity=opacity,
-                )
-            else:
-                self.mesh_actor.mapper.dataset.copy_from(self.current_mesh)
-                self.mesh_actor.prop.show_edges = show_edges
-                self.mesh_actor.prop.opacity = opacity
-        elif self.mesh_actor is not None:
-            self.plotter.remove_actor(self.mesh_actor)
-            self.mesh_actor = None
+            self.mesh_actor = self.plotter.add_mesh(
+                self.current_mesh, 
+                color=self.mesh_color, 
+                show_edges=show_edges,
+                edge_color="black",
+                opacity=opacity,
+            )
 
         self._update_stats()
 
@@ -314,6 +333,9 @@ class PruneMainWindow(QMainWindow):
             self.btn_convex_hull.setEnabled(True)
             self.btn_shrinkwrap.setEnabled(True)
             self.btn_reset_mesh.setEnabled(True)
+            self.btn_coacd.setEnabled(True)
+            self.btn_offset.setEnabled(True)
+            self.btn_repair.setEnabled(True)
             
         self._run_in_background(
             processor.load_mesh, file_path, 
@@ -382,6 +404,51 @@ class PruneMainWindow(QMainWindow):
             processor.apply_voxel_shrinkwrap, self.current_mesh, pitch,
             success_callback=on_success,
             error_context="Shrinkwrap Error"
+        )
+
+    def on_coacd(self):
+        if self.current_mesh is None:
+            return
+            
+        def on_success(mesh):
+            self.current_mesh = mesh
+            self._update_plot()
+            
+        self._run_in_background(
+            processor.apply_convex_decomposition, self.current_mesh, 0.05,
+            success_callback=on_success,
+            error_context="CoACD Error"
+        )
+
+    def on_offset(self):
+        if self.current_mesh is None:
+            return
+            
+        offset_mm = self.spin_offset_dist.value()
+        pitch = self.spin_voxel_pitch.value()
+        
+        def on_success(mesh):
+            self.current_mesh = mesh
+            self._update_plot()
+            
+        self._run_in_background(
+            processor.apply_safety_offset, self.current_mesh, offset_mm, pitch,
+            success_callback=on_success,
+            error_context="Safety Offset Error"
+        )
+
+    def on_repair(self):
+        if self.current_mesh is None:
+            return
+            
+        def on_success(mesh):
+            self.current_mesh = mesh
+            self._update_plot()
+            
+        self._run_in_background(
+            processor.apply_mesh_repair, self.current_mesh,
+            success_callback=on_success,
+            error_context="Repair Error"
         )
 
     def on_reset_mesh(self):

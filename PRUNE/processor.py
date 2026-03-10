@@ -45,6 +45,8 @@ def apply_decimation(mesh: pv.PolyData, target_reduction: float) -> pv.PolyData:
     # Check if the mesh is pure triangles, decimate only works on triangles
     tri_mesh = mesh.triangulate()
     decimated = tri_mesh.decimate(target_reduction)
+    if decimated.n_points == 0 or decimated.n_cells == 0:
+        raise ValueError("Decimation removed all faces. Try a smaller reduction percentage.")
     return decimated
 
 def apply_convex_hull(mesh: pv.PolyData) -> pv.PolyData:
@@ -58,6 +60,8 @@ def apply_convex_hull(mesh: pv.PolyData) -> pv.PolyData:
     
     # Convert back to pyvista
     n_faces = len(hull_tm.faces)
+    if n_faces == 0:
+        raise ValueError("Failed to generate a valid convex hull.")
     # Pyvista needs faces formatted as [n_points_in_face, p1, p2, p3, ...]
     padding = np.full((n_faces, 1), 3, dtype=np.int64)
     pv_faces = np.hstack((padding, hull_tm.faces)).flatten()
@@ -89,6 +93,9 @@ def apply_voxel_shrinkwrap(mesh: pv.PolyData, pitch: float) -> pv.PolyData:
     
     # 4. Extract surface via marching cubes
     v, f, n, _ = measure.marching_cubes(eroded, level=0.5)
+    
+    if len(v) == 0 or len(f) == 0:
+        raise ValueError("Shrinkwrap produced an empty mesh. Voxel pitch might be too large.")
     
     # Translate vertices from padded voxel indices back to world coordinates
     v = (v - 1.0) * pitch + solid_voxels.transform[:3, 3]
@@ -151,3 +158,77 @@ def _load_step_via_gmsh(file_path: str) -> pv.PolyData:
         
     finally:
         gmsh.finalize()
+
+def apply_mesh_repair(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Cleans the mesh by removing duplicate points, degenerate cells, 
+    and unused data to repair non-manifold and broken CAD exports.
+    """
+    cleaned = mesh.clean()
+    if cleaned.n_points == 0 or cleaned.n_cells == 0:
+        raise ValueError("Repair removed all geometry. The original mesh was likely empty or completely degenerate.")
+    return cleaned
+
+def apply_safety_offset(mesh: pv.PolyData, offset_mm: float, pitch: float) -> pv.PolyData:
+    """
+    Expands the mesh outward by approximately `offset_mm` using morphological dilation
+    on a voxelized volume. This creates a safe collision boundary without self-intersecting normal bugs.
+    """
+    tm_mesh = trimesh.Trimesh(vertices=mesh.points, faces=mesh.faces.reshape(-1, 4)[:, 1:])
+    voxels = tm_mesh.voxelized(pitch=pitch)
+    solid_voxels = voxels.fill()
+    matrix = solid_voxels.matrix
+    
+    # Calculate how many voxels represent the offset
+    iterations = max(1, int(round(offset_mm / pitch)))
+    
+    # Pad matrix to give room for inflation
+    padded = np.pad(matrix, iterations + 1, mode='constant', constant_values=False)
+    
+    # Dilate uniformly
+    struct = nd.generate_binary_structure(3, 3)
+    dilated = nd.binary_dilation(padded, structure=struct, iterations=iterations)
+    
+    # Extract surface via marching cubes
+    v, f, n, _ = measure.marching_cubes(dilated, level=0.5)
+    
+    if len(v) == 0 or len(f) == 0:
+        raise ValueError("Safety offset produced an empty mesh.")
+        
+    # Translate vertices back to world coords, accounting for padding
+    v = (v - (iterations + 1)) * pitch + solid_voxels.transform[:3, 3]
+    
+    # Convert to PyVista
+    n_faces = len(f)
+    padding_arr = np.full((n_faces, 1), 3, dtype=np.int64)
+    pv_faces = np.hstack((padding_arr, f)).flatten()
+    
+    return pv.PolyData(v, pv_faces)
+
+def apply_convex_decomposition(mesh: pv.PolyData, threshold: float = 0.05) -> pv.PolyData:
+    """
+    Uses coacd to decompose a complex concave mesh into a cluster of tight convex hulls.
+    Returns a single merged MultiBlock mesh or a combined PolyData.
+    """
+    import coacd
+    coacd.set_log_level("error")
+    
+    points = mesh.points
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    
+    # coacd accepts nodes, elements. It returns a list of (vertices, faces) for each part
+    mesh_coacd = coacd.Mesh(points, faces)
+    parts = coacd.run_coacd(mesh_coacd, threshold=threshold)
+    
+    if not parts:
+        raise ValueError("Convex Decomposition failed to generate any parts.")
+        
+    blocks = pv.MultiBlock()
+    for i, (v, f) in enumerate(parts):
+        n_faces = len(f)
+        padding_arr = np.full((n_faces, 1), 3, dtype=np.int64)
+        pv_faces = np.hstack((padding_arr, f)).flatten()
+        sub_mesh = pv.PolyData(v, pv_faces)
+        blocks.append(sub_mesh)
+        
+    return blocks.combine()
